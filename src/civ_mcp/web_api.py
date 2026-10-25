@@ -6,24 +6,27 @@ MCP server process, sharing the same GameConnection via create_app().
 
 import dataclasses
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from civ_mcp.broadcast import Broadcast
 from civ_mcp.connection import LuaError
 from civ_mcp.game_state import GameState
 
 log = logging.getLogger(__name__)
 
 
-def create_app(gs: GameState) -> FastAPI:
+def create_app(gs: GameState, broadcast: Broadcast | None = None) -> FastAPI:
     """Create a FastAPI app wired to the given GameState."""
     app = FastAPI(
         title="civ6-mcp API",
         description="Read-only game state API for the Civ 6 web dashboard",
     )
     app.state.gs = gs
+    app.state.broadcast = broadcast
 
     app.add_middleware(
         CORSMiddleware,
@@ -31,6 +34,29 @@ def create_app(gs: GameState) -> FastAPI:
         allow_methods=["GET"],
         allow_headers=["*"],
     )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def viewer():
+        page = Path(__file__).parent / "static" / "viewer.html"
+        return HTMLResponse(page.read_text(encoding="utf-8"))
+
+    @app.get("/api/broadcast")
+    async def broadcast_rows(after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)):
+        bc = app.state.broadcast
+        if bc is None:
+            return {"game": None, "rows": [], "next": after}
+        rows = bc.tail(after=after, limit=limit)
+        gd = bc.game_dir
+        return {
+            "game": gd.name if gd else None,
+            "rows": rows,
+            "next": rows[-1]["i"] if rows else after,
+        }
+
+    @app.get("/api/board")
+    async def board():
+        bc = app.state.broadcast
+        return {"text": bc.last_board() if bc else None}
 
     @app.exception_handler(ConnectionError)
     async def connection_error_handler(request, exc):

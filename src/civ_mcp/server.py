@@ -359,11 +359,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     watchdog.start()
 
     # Start the web dashboard API as a background task (port 8000)
-    web_app = create_app(gs)
-    uvi_config = uvicorn.Config(web_app, host="0.0.0.0", port=8000, log_level="info")
+    web_port = int(os.environ.get("CIV_MCP_WEB_PORT", "8000"))
+    web_app = create_app(gs, broadcast)
+    uvi_config = uvicorn.Config(web_app, host="127.0.0.1", port=web_port, log_level="info")
     uvi_server = uvicorn.Server(uvi_config)
     api_task = asyncio.create_task(uvi_server.serve())
-    log.info("Web API starting on http://0.0.0.0:8000")
+    log.info("Web API starting on http://127.0.0.1:%d", web_port)
 
     try:
         yield AppContext(
