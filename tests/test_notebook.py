@@ -47,3 +47,17 @@ def test_text_with_em_dash_sanitised_and_multiline_collapsed(tmp_path):
     append_notebook_file(p, "Game log", "lost — badly\nsecond line")
     txt = p.read_text()
     assert "—" not in txt and txt.count("\n- ") == 1
+
+
+def test_empty_text_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        append_notebook_file(tmp_path / "n.md", "Game log", "   \n ")
+
+
+def test_heading_at_eof_without_trailing_newline(tmp_path):
+    p = tmp_path / "N.md"
+    p.write_text("# Notebook\n\n## Game log")
+    append_notebook_file(p, "Game log", "kept")
+    txt = p.read_text()
+    assert txt.index("## Game log") < txt.index("kept") and txt.endswith("\n")
+    assert "## Game log- " not in txt

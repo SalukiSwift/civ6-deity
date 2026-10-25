@@ -109,4 +109,4 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `load_save_from_menu` | L | Loads a save from the main menu; reason required, logged | Main menu Load Game | reason required, logged |
 | `restart_and_load` | L | Kill, relaunch and load; reason required, logged | Exit, relaunch, Load Game | reason required, logged |
 
-Later tasks append rows for `get_situation`, `batch_orders`, `read_notebook`, `append_notebook` and `new_game`.
+Later tasks append rows for `get_situation`, `batch_orders` and `new_game`.

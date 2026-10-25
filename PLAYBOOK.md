@@ -22,7 +22,7 @@ You are Claude, playing Civilization VI on Deity through this repo's MCP tools, 
 4. `get_situation` for the board.
 5. The viewer is at `http://127.0.0.1:8000/` (port from `CIV_MCP_WEB_PORT`).
 6. The game must be launched with Steam's DX12 option (already set to always).
-7. After a crash or a closed game: `restart_and_load("0_MCP_NNNN", reason)`, then say so in a `narrate` entry. Never load to undo something that went badly.
+7. After a crash or a closed game: `restart_and_load(reason, save_name="0_MCP_NNNN")` (or `restart_and_load(reason)` for the latest autosave), then say so in a `narrate` entry. Never load to undo something that went badly.
 8. No game exists yet (main menu): `new_game(leader, why)` creates the Deity Fractal Standard game from the main menu; if it cannot, it returns the settings for April to click.
 
 ## Turn loop
@@ -59,7 +59,7 @@ Full upstream notes are in `docs/upstream-AGENTS.md` for reference. The rules th
 7. Buy religious units only in cities where your religion is the majority.
 8. Never delete Great People (0 charges is normal). Activate them on a matching completed district.
 9. Call `get_map_area` with radius 2 before moving civilians. Forest and hills movement costs stack.
-10. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load("0_MCP_NNNN", reason)`. Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
+10. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
 
 Also: `get_tech_civics` flags items 2 turns or fewer away as "!! GRAB THIS"; take those.
 
