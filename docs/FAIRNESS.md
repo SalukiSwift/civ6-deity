@@ -72,6 +72,7 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `form_alliance` | M | Proposes an alliance | Diplomacy screen | HasMet |
 | `city_action` | M | City commands, including keep/raze/liberate decisions | City panel, captured-city popup | game rules |
 | `unit_action` | M | Unit commands (move, attack, fortify, skip, found city...) | Unit panel and map clicks | IsVisible for targets, game rules |
+| `batch_orders` | M | Runs a list of the existing unit/city/research orders in sequence through the same player commands; no new capability | Unit panel, city panel and research screens, one after another | same as the single tools |
 | `skip_remaining_units` | M | Fortify or heal, then stock Skip Turn for the rest | Unit panel Skip Turn button | game rules |
 | `set_city_production` | M | Sets city production | City production panel | game rules |
 | `purchase_item` | M | Buys an item | City panel purchase buttons | game rules |

@@ -22,6 +22,13 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
 from civ_mcp.broadcast import ACTION_TOOLS, KINDS, Broadcast
+from civ_mcp.orders import (
+    dispatch_research,
+    dispatch_unit_action,
+    format_results,
+    parse_orders,
+    run_orders,
+)
 from civ_mcp.situation import format_situation, gather_situation
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
@@ -1796,59 +1803,9 @@ async def unit_action(
         params["improvement"] = improvement
 
     async def _run():
-        match action.lower():
-            case "move":
-                if target_x is None or target_y is None:
-                    return "Error: move requires target_x and target_y"
-                return await gs.move_unit(unit_index, target_x, target_y)
-            case "attack":
-                if target_x is None or target_y is None:
-                    return "Error: attack requires target_x and target_y"
-                return await gs.attack_unit(unit_index, target_x, target_y)
-            case "fortify":
-                return await gs.fortify_unit(unit_index)
-            case "skip":
-                return await gs.skip_unit(unit_index)
-            case "found_city":
-                return await gs.found_city(unit_index)
-            case "improve":
-                if not improvement:
-                    return "Error: improve requires improvement name (e.g. IMPROVEMENT_FARM). To repair a pillaged improvement, use action='repair' instead."
-                return await gs.improve_tile(unit_index, improvement)
-            case "repair":
-                return await gs.repair_improvement(unit_index)
-            case "remove_improvement":
-                return await gs.remove_improvement(unit_index)
-            case "remove_feature":
-                return await gs.remove_feature(unit_index)
-            case "build_route":
-                return await gs.build_route(unit_index)
-            case "automate":
-                return await gs.automate_explore(unit_index)
-            case "heal":
-                return await gs.heal_unit(unit_index)
-            case "alert":
-                return await gs.alert_unit(unit_index)
-            case "sleep":
-                return await gs.sleep_unit(unit_index)
-            case "delete":
-                return await gs.delete_unit(unit_index)
-            case "trade_route":
-                if target_x is None or target_y is None:
-                    return "Error: trade_route requires target_x and target_y of destination city"
-                return await gs.make_trade_route(unit_index, target_x, target_y)
-            case "activate":
-                return await gs.activate_great_person(unit_index)
-            case "sacrifice_charges":
-                return await gs.sacrifice_builder_charges(unit_index)
-            case "spread_religion":
-                return await gs.spread_religion(unit_index)
-            case "teleport":
-                if target_x is None or target_y is None:
-                    return "Error: teleport requires target_x and target_y of the destination city"
-                return await gs.teleport_to_city(unit_index, target_x, target_y)
-            case _:
-                return f"Error: Unknown action '{action}'. Valid: move, attack, fortify, skip, found_city, improve, repair, remove_improvement, remove_feature, build_route, automate, heal, alert, sleep, delete, trade_route, activate, sacrifice_charges, teleport, spread_religion"
+        return await dispatch_unit_action(
+            gs, action, unit_index, target_x, target_y, improvement
+        )
 
     result = await _logged(ctx, "unit_action", params, _run)
     if (
@@ -1971,15 +1928,71 @@ async def set_research(
     gs = _get_game(ctx)
 
     async def _run():
-        if category.lower() == "civic":
-            return await gs.set_civic(tech_or_civic)
-        return await gs.set_research(tech_or_civic)
+        return await dispatch_research(gs, tech_or_civic, category)
 
     return await _logged(
         ctx,
         "set_research",
         {"why": why, "tech_or_civic": tech_or_civic, "category": category},
         _run,
+    )
+
+
+@mcp.tool()
+async def batch_orders(ctx: Context, orders: list[dict], why: str = "") -> str:
+    """Run a whole turn's worth of orders in one call, in sequence.
+
+    Each order is a dict, one of:
+      {"unit_id": int, "action": "move|attack|fortify|skip|found_city|improve|heal|alert|sleep",
+       "x": int, "y": int, "improvement": str, "why": str}
+      {"city_id": int, "production": "UNIT_WARRIOR"}  (districts also need x and y)
+      {"city_id": int, "purchase": "BUILDING_MONUMENT"}
+      {"research": "TECH_MINING"}
+      {"civic": "CIVIC_CRAFTSMANSHIP"}
+    Same effect as the single tools (unit_action, set_city_production,
+    purchase_item, set_research). A failing or malformed order does not stop
+    the rest; the result has one line per order, by position.
+
+    why: Optional batch-level reason, used for orders without their own why.
+    """
+    gs = _get_game(ctx)
+    parsed, errors = parse_orders(orders)
+    tool_of = {
+        "unit": "unit_action",
+        "production": "set_city_production",
+        "purchase": "purchase_item",
+        "research": "set_research",
+        "civic": "set_research",
+    }
+
+    async def _on_each(o, res):
+        if o.kind == "unit" and o.action in ("move", "attack"):
+            _get_camera(ctx).push(o.x, o.y, f"{o.action}\u2192({o.x},{o.y})")
+        params: dict[str, Any] = {"why": o.why or why}
+        if o.kind == "unit":
+            params.update(unit_id=o.id, action=o.action)
+            if o.item:
+                params["improvement"] = o.item
+        else:
+            params["item_name"] = o.item
+        if o.x is not None and o.y is not None:
+            params["target_x"], params["target_y"] = o.x, o.y
+        try:
+            bc = await _bind_broadcast(ctx)
+            bc.append(
+                "action",
+                Broadcast.action_text(tool_of[o.kind], params, res),
+                turn=gs._high_water_turn or None,
+            )
+        except Exception:
+            log.warning("Broadcast action log failed", exc_info=True)
+
+    async def _run():
+        results = await run_orders(gs, parsed, _on_each)
+        return format_results(len(orders), results, errors)
+
+    return await _logged(
+        ctx, "batch_orders", {"why": why, "count": len(orders)}, _run
     )
 
 
