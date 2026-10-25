@@ -1,6 +1,6 @@
 """Spatiotemporal attention tracker — records which tiles the agent observes.
 
-Writes per-game JSONL to ~/.civ6-mcp/spatial_{civ}_{seed}.jsonl.
+Writes per-game JSONL to ~/.civ6-mcp/spatial_{civ}_{game}.jsonl.
 This is research instrumentation only — data does NOT feed back to the agent.
 
 Each tool call that surfaces coordinate data is classified by attention type.
@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 import time
 from typing import TYPE_CHECKING, Any
+
+from civ_mcp.diary import identity_hash
 
 if TYPE_CHECKING:
     from civ_mcp.telemetry import TelemetryEmitter
@@ -155,7 +157,7 @@ class SpatialTracker:
 
     def bind_game(self, civ: str, seed: int) -> None:
         """Bind to a game identity."""
-        game_id = f"{civ}_{seed}"
+        game_id = f"{civ}_{identity_hash(seed)}"
         if self._game == game_id:
             return
         self._game = game_id

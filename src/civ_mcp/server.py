@@ -5,7 +5,6 @@ to the running game via FireTuner protocol.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -28,6 +27,7 @@ from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
 from civ_mcp.diary import (
     diary_path as _diary_path,
+    identity_hash,
     format_diary_entry as _format_diary_entry,
     merge_agent_reflections as _merge_agent_reflections,
     read_diary_entries as _read_diary_entries,
@@ -418,7 +418,7 @@ async def _bind_broadcast(ctx: Context) -> Broadcast:
         log.warning("Broadcast bind failed", exc_info=True)
         return bc
     try:
-        identity = hashlib.sha1(str(seed).encode()).hexdigest()[:10]
+        identity = identity_hash(seed)
         if bc.identity != identity:
             was_bound = bc.game_dir is not None
             civ = civ.lower().removeprefix("civilization_")
@@ -2049,7 +2049,7 @@ async def end_turn(ctx: Context, summary: str) -> str:
         except Exception:
             log.warning("Diary: failed to capture snapshot", exc_info=True)
         if _diary_snapshot:
-            game_id = f"{_diary_civ_type}_{_diary_seed}"
+            game_id = f"{_diary_civ_type}_{identity_hash(_diary_seed)}"
             ts = datetime.now(timezone.utc).isoformat()
             # MCP client metadata (from handshake)
             agent_client = ""
@@ -2401,7 +2401,7 @@ async def get_diary(
         to_turn: Return entries up to this turn (inclusive).
 
     Auto-detects the current game from the live connection. Each game has
-    its own diary file (keyed by civ + random seed).
+    its own diary file (keyed by civ + an opaque game id).
 
     Call this at the start of a session or after context compaction to
     restore strategic memory from previous turns.
@@ -2415,11 +2415,11 @@ async def get_diary(
     run_id = _get_logger(ctx).session_id
     path = _diary_path(civ_type, seed, run_id)
     if not path.exists():
-        return f"No diary entries yet for this game ({civ_type}, seed {seed})."
+        return f"No diary entries yet for this game ({civ_type}, game {identity_hash(seed)})."
 
     entries = _read_diary_entries(path)
     if not entries:
-        return f"No diary entries yet for this game ({civ_type}, seed {seed})."
+        return f"No diary entries yet for this game ({civ_type}, game {identity_hash(seed)})."
 
     # New format (v2) has N rows per turn — filter to agent rows only.
     # Old format entries (no "v" key) pass through unchanged.

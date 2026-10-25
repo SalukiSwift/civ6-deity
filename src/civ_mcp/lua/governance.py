@@ -437,7 +437,7 @@ for i = 0, 62 do
         local suzName = "None"
         if suzID >= 0 and suzID ~= 63 then
             local sCfg = PlayerConfigurations[suzID]
-            if sCfg then suzName = Locale.Lookup(sCfg:GetCivilizationShortDescription()) end
+            if sCfg then suzName = ((Players[suzID] and Players[suzID]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(suzID)) and "an unmet civilization" or Locale.Lookup(sCfg:GetCivilizationShortDescription())) end
         end
         local canSend = pInfluence:CanGiveTokensToPlayer(i) and "1" or "0"
         print("CS|" .. i .. "|" .. name:gsub("|","/") .. "|" .. csType .. "|" .. envoys .. "|" .. suzID .. "|" .. suzName:gsub("|","/") .. "|" .. canSend)

@@ -10,6 +10,8 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from civ_mcp.diary import identity_hash
+
 if TYPE_CHECKING:
     from civ_mcp.telemetry import TelemetryEmitter
 
@@ -47,7 +49,7 @@ class GameLogger:
         self._turn: int | None = None
         self._game: str | None = None
         self._civ: str | None = None
-        self._seed: int | None = None
+        self._seed: str | None = None
         self._agent_model: str | None = os.environ.get("CIV_MCP_AGENT_MODEL") or None
         self._game_over_logged: bool = False
 
@@ -67,13 +69,13 @@ class GameLogger:
 
     def bind_game(self, civ: str, seed: int) -> None:
         """Bind to a game identity. Propagates to emitter for sink binding."""
-        game_id = f"{civ}_{seed}"
+        game_id = f"{civ}_{identity_hash(seed)}"
         if self._game == game_id:
             return  # already bound to this game
         self._game_over_logged = False
         self._game = game_id
         self._civ = civ
-        self._seed = seed
+        self._seed = identity_hash(seed)
         self._emitter.bind_game(civ, seed)
 
     def _build_entry(

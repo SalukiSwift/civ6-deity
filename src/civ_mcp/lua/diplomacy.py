@@ -47,11 +47,14 @@ for i = 0, 62 do
             local okMil, milStr = pcall(function() return Players[i]:GetStats():GetMilitaryStrength() end)
             local okMyMil, myMilStr = pcall(function() return Players[me]:GetStats():GetMilitaryStrength() end)
             if okMil and okMyMil then print("MILITARY|" .. i .. "|" .. (milStr or 0) .. "|" .. (myMilStr or 0)) end
-            local nCivCities = 0
+            -- Fair play: count only cities on plots we have revealed; live
+            -- stats (pop, loyalty, walls, strength) only where the plot is
+            -- currently visible. Unseen cities are not counted at all.
+            local nSeenCities = 0
             for _, ec in Players[i]:GetCities():Members() do
-                nCivCities = nCivCities + 1
                 local ecx, ecy = ec:GetX(), ec:GetY()
-                if pVis:IsRevealed(ecx, ecy) then
+                if pVis:IsRevealed(ecx, ecy) then nSeenCities = nSeenCities + 1 end
+                if pVis:IsVisible(ecx, ecy) then
                     local ecName = Locale.Lookup(ec:GetName())
                     local ecPop = ec:GetPopulation()
                     local ecLoy, ecLoyPT = 100, 0
@@ -71,7 +74,7 @@ for i = 0, 62 do
                     print("ECITY|" .. i .. "|" .. ecName:gsub("|","/") .. "|" .. ecx .. "," .. ecy .. "|" .. ecPop .. "|" .. string.format("%.0f|%.1f", ecLoy, ecLoyPT) .. "|" .. ecWalls .. "|" .. ecDef)
                 end
             end
-            print("CIVCITIES|" .. i .. "|" .. nCivCities)
+            print("CITIESSEEN|" .. i .. "|" .. nSeenCities)
             local mods = ai:GetDiplomaticModifiers(me)
             if mods then
                 for _, mod in ipairs(mods) do
@@ -500,7 +503,12 @@ print("{SENTINEL}")
 
 
 def build_deal_options_query(other_player_id: int) -> str:
-    """Show what both sides can trade — resources, gold, favor, agreements (InGame)."""
+    """Show what both sides can trade — resources, gold, favor, agreements (InGame).
+
+    Fair play: their gold, gold per turn, favor, tradeable resources and city
+    list are exactly what the human deal screen shows; they must only be
+    surfaced as "(deal screen)" data inside a trade/deal flow.
+    """
     return f"""
 local me = Game.GetLocalPlayer()
 local target = {other_player_id}
@@ -1152,7 +1160,7 @@ def parse_diplomacy_response(lines: list[str]) -> list[CivInfo]:
                         civs[pid].visible_cities.append(vc)
                     except (ValueError, IndexError):
                         pass
-        elif line.startswith("CIVCITIES|"):
+        elif line.startswith("CITIESSEEN|"):
             parts = line.split("|")
             if len(parts) >= 3:
                 pid = int(parts[1])

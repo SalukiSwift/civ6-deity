@@ -5,6 +5,7 @@ Writes/reads JSONL diary files stored in ~/.civ6-mcp/.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -19,9 +20,18 @@ _REFLECTION_FIELDS = (
 )
 
 
+def identity_hash(seed: int) -> str:
+    """Opaque game identity: sha1(str(seed))[:10].
+
+    The raw map seed lets an agent regenerate the whole map, so it never
+    appears in agent-visible text or filenames. Same hash the broadcast uses.
+    """
+    return hashlib.sha1(str(seed).encode()).hexdigest()[:10]
+
+
 def diary_path(civ: str, seed: int, run_id: str) -> Path:
-    """Per-game diary file: diary_{civ}_{seed}_{run_id}.jsonl"""
-    return DIARY_DIR / f"diary_{civ}_{seed}_{run_id}.jsonl"
+    """Per-game diary file: diary_{civ}_{identity_hash(seed)}_{run_id}.jsonl"""
+    return DIARY_DIR / f"diary_{civ}_{identity_hash(seed)}_{run_id}.jsonl"
 
 
 def merge_agent_reflections(

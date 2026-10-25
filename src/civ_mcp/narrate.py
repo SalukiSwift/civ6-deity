@@ -756,12 +756,12 @@ def narrate_diplomacy(civs: list[lq.CivInfo]) -> str:
                         f"{vc.name} pop {vc.population} ({vc.x},{vc.y}){walls_str}{loy_warn}"
                     )
                 hidden = c.num_cities - len(c.visible_cities)
-                fog_str = f" + {hidden} in fog" if hidden > 0 else ""
+                fog_str = f" + {hidden} seen earlier (not in view now)" if hidden > 0 else ""
                 lines.append(
-                    f"    Cities ({c.num_cities}): {'; '.join(city_parts)}{fog_str}"
+                    f"    Cities seen ({c.num_cities}): {'; '.join(city_parts)}{fog_str}"
                 )
             else:
-                lines.append(f"    Cities: {c.num_cities} (all in fog)")
+                lines.append(f"    Cities seen: {c.num_cities} (not in view now)")
         # Military strength comparison
         if c.military_strength > 0:
             # Find our military strength from the MILITARY line (stored per-civ parse)
@@ -999,7 +999,7 @@ def narrate_deal_options(opts: lq.DealOptions) -> str:
         f"  Our gold: {opts.our_gold} ({opts.our_gpt:+d}/turn) | Favor: {opts.our_favor}"
     )
     lines.append(
-        f"  Their gold: {opts.their_gold} ({opts.their_gpt:+d}/turn) | Favor: {opts.their_favor}"
+        f"  Their gold (deal screen): {opts.their_gold} ({opts.their_gpt:+d}/turn) | Favor: {opts.their_favor}"
     )
     if opts.our_luxuries or opts.our_strategics:
         lines.append("\nOur tradeable resources:")
@@ -1008,7 +1008,7 @@ def narrate_deal_options(opts: lq.DealOptions) -> str:
         if opts.our_strategics:
             lines.append(f"  Strategics: {', '.join(opts.our_strategics)}")
     if opts.their_luxuries or opts.their_strategics:
-        lines.append("\nTheir tradeable resources:")
+        lines.append("\nTheir tradeable resources (deal screen):")
         if opts.their_luxuries:
             lines.append(f"  Luxuries: {', '.join(opts.their_luxuries)}")
         if opts.their_strategics:
@@ -1019,7 +1019,7 @@ def narrate_deal_options(opts: lq.DealOptions) -> str:
             cap = " (CAPITAL)" if c.is_capital else ""
             lines.append(f"  {c.name} (id={c.city_id}, pop {c.population}){cap}")
     if opts.their_cities:
-        lines.append(f"\nTheir cities ({len(opts.their_cities)}):")
+        lines.append(f"\nTheir cities (deal screen, {len(opts.their_cities)}):")
         for c in opts.their_cities:
             cap = " (CAPITAL)" if c.is_capital else ""
             lines.append(f"  {c.name} (id={c.city_id}, pop {c.population}){cap}")
@@ -1828,38 +1828,19 @@ def narrate_victory_progress(vp: lq.VictoryProgress) -> str:
         marker = " <--" if us and p.player_id == us.player_id else ""
         lines.append(f"  {p.name}: {p.score}{marker}")
 
-    # --- Rival Intelligence (met civs only) ---
+    # --- Rivals: World Rankings values for met civs only ---
+    # Fair play: score, military strength (Domination tab), techs (Science
+    # tab), tourism (Culture tab) and cities on revealed tiles. No yields.
     lines.append("")
-    lines.append("RIVAL INTELLIGENCE (met civilizations)")
+    lines.append("RIVALS (World Rankings)")
     for p in sorted(vp.players, key=lambda p: p.score, reverse=True):
         marker = " <--" if us and p.player_id == us.player_id else ""
+        cities_label = "cities" if us and p.player_id == us.player_id else "cities seen"
         lines.append(
-            f"  {p.name}: {p.num_cities} cities | "
-            f"Sci {p.science_yield:.0f} Cul {p.culture_yield:.0f} Gold {p.gold_yield:+.0f} | "
+            f"  {p.name}: {p.num_cities} {cities_label} | "
+            f"Techs {p.techs_researched} | Tourism {p.tourism} | "
             f"Mil {p.military_strength}{marker}"
         )
-
-    # --- Demographics (all civilizations, anonymized) ---
-    if vp.demographics:
-        lines.append("")
-        lines.append("DEMOGRAPHICS (all civilizations)")
-        label_map = {
-            "Population": "Population",
-            "Soldiers": "Soldiers",
-            "CropYield": "Crop Yield",
-            "GNP": "GNP",
-            "Land": "Land",
-            "Goods": "Goods",
-        }
-        for key in ["Population", "Soldiers", "CropYield", "GNP", "Land", "Goods"]:
-            d = vp.demographics.get(key)
-            if d:
-                label = label_map.get(key, key)
-                lines.append(
-                    f"  {label:12s} Rank {d.rank} | "
-                    f"Ours: {d.value:.0f} | Best: {d.best:.0f} | "
-                    f"Avg: {d.average:.1f} | Worst: {d.worst:.0f}"
-                )
 
     # --- Victory Path Assessment ---
     if us:
@@ -1899,15 +1880,10 @@ def narrate_victory_progress(vp: lq.VictoryProgress) -> str:
                     )
                 )
 
-        # Domination: check our military vs all civs (use demographics Soldiers for full picture)
+        # Domination: our military vs met civs (World Rankings, Domination tab)
         if all_enabled or "VICTORY_CONQUEST" in ev:
-            soldiers_demo = vp.demographics.get("Soldiers")
             our_holds = vp.capitals_held.get(us.name, True)
-            best_mil = (
-                soldiers_demo.best
-                if soldiers_demo
-                else max(p.military_strength for p in vp.players)
-            )
+            best_mil = max(p.military_strength for p in vp.players)
             if not our_holds:
                 assessments.append(
                     ("Domination", 5, "CAPITAL LOST — defensive priority!")
@@ -1998,32 +1974,22 @@ def narrate_victory_progress(vp: lq.VictoryProgress) -> str:
                     ("Diplomatic", 20, f"{us.diplomatic_vp}/20 VP — slow accumulation")
                 )
 
-        # Score: always a fallback — use demographics rank if available
-        pop_demo = vp.demographics.get("Population")
-        if pop_demo:
-            assessments.append(
-                (
-                    "Score",
-                    50 if pop_demo.rank <= 2 else 25,
-                    f"Rank #{pop_demo.rank} by population (proxy for score)",
-                )
+        # Score: always a fallback, rank among met civs
+        our_rank = sorted(vp.players, key=lambda p: p.score, reverse=True)
+        our_pos = (
+            next(
+                (i for i, p in enumerate(our_rank) if p.player_id == us.player_id),
+                0,
             )
-        else:
-            our_rank = sorted(vp.players, key=lambda p: p.score, reverse=True)
-            our_pos = (
-                next(
-                    (i for i, p in enumerate(our_rank) if p.player_id == us.player_id),
-                    0,
-                )
-                + 1
+            + 1
+        )
+        assessments.append(
+            (
+                "Score",
+                50 if our_pos <= 2 else 25,
+                f"Rank #{our_pos} by score (met civs only)",
             )
-            assessments.append(
-                (
-                    "Score",
-                    50 if our_pos <= 2 else 25,
-                    f"Rank #{our_pos} by score (met civs only)",
-                )
-            )
+        )
 
         # Sort by viability and display
         assessments.sort(key=lambda a: a[1], reverse=True)

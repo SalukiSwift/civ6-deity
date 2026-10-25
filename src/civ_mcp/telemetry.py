@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from civ_mcp.diary import identity_hash
 from civ_mcp.version import GIT_DESCRIBE, GIT_SHA, VERSION
 
 log = logging.getLogger(__name__)
@@ -70,12 +71,12 @@ class LocalSink:
     """Writes JSONL files to ~/.civ6-mcp/, preserving existing file layout.
 
     File layout per game:
-      diary_{civ}_{seed}_{run_id}.jsonl        — player rows per turn
-      diary_{civ}_{seed}_{run_id}_cities.jsonl  — city rows per turn
-      log_{civ}_{seed}_{run_id}.jsonl           — tool call events
-      spatial_{civ}_{seed}_{run_id}.jsonl        — attention tracking
-      mapstatic_{civ}_{seed}_{run_id}.json       — one-time terrain dump
-      mapturns_{civ}_{seed}_{run_id}.jsonl       — per-turn ownership deltas
+      diary_{civ}_{game}_{run_id}.jsonl        — player rows per turn
+      diary_{civ}_{game}_{run_id}_cities.jsonl  — city rows per turn
+      log_{civ}_{game}_{run_id}.jsonl           — tool call events
+      spatial_{civ}_{game}_{run_id}.jsonl        — attention tracking
+      mapstatic_{civ}_{game}_{run_id}.json       — one-time terrain dump
+      mapturns_{civ}_{game}_{run_id}.jsonl       — per-turn ownership deltas
     """
 
     def __init__(self, directory: Path | None = None) -> None:
@@ -96,7 +97,7 @@ class LocalSink:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def bind_game(self, civ: str, seed: int) -> None:
-        game_id = f"{civ}_{seed}"
+        game_id = f"{civ}_{identity_hash(seed)}"
         if self._game_id == game_id:
             return
         self._civ = civ
@@ -247,7 +248,7 @@ class CloudSink:
 
     def bind_game(self, civ: str, seed: int) -> None:
         self._civ = civ
-        self._seed = seed
+        self._seed = identity_hash(seed)
         # Update manifest with game identity (blocking — runs once per game)
         manifest_path = f"{self._run_prefix()}/manifest.json"
         try:
@@ -256,8 +257,7 @@ class CloudSink:
         except Exception:
             existing = {"run_id": self._run_id, "metadata": self._metadata}
         existing["civ"] = civ
-        existing["seed"] = seed
-        existing["game_id"] = f"{civ}_{seed}"
+        existing["game_id"] = f"{civ}_{identity_hash(seed)}"
         self._write_cloud_json(manifest_path, existing)
 
     async def emit(self, event_type: str, data: dict[str, Any]) -> None:
@@ -391,7 +391,7 @@ class AlertSink:
         self._model = metadata.get("model_id", "?")
 
     def bind_game(self, civ: str, seed: int) -> None:
-        self._game_id = f"{civ}_{seed}"
+        self._game_id = f"{civ}_{identity_hash(seed)}"
 
     async def emit(self, event_type: str, data: dict[str, Any]) -> None:
         turn = data.get("turn", -1)

@@ -13,24 +13,29 @@ class ScoreEntry:
 
 
 @dataclass
-class RivalSnapshot:
-    """Per-turn stats for a rival civ, for diary power curves."""
+class RivalRow:
+    """A met rival as the World Rankings screen and ribbon show it.
 
-    id: int
+    Fair-play mapping: score and era come from the diplomacy ribbon; techs,
+    military strength, science (space project) VP, tourism, tourists, civs
+    converted and diplomatic VP are World Rankings tab values. cities_seen is
+    the number of the rival's cities on tiles the local player has revealed.
+    Nothing here is a hidden yield or stockpile.
+    """
+
+    player_id: int
     name: str
-    score: int
-    cities: int
-    pop: int
-    sci: float
-    cul: float
-    gold: float
-    mil: int
-    techs: int
-    civics: int
-    faith: float
-    sci_vp: int
-    diplo_vp: int
-    stockpiles: dict[str, int] = field(default_factory=dict)
+    met: bool = True
+    score: int = 0
+    techs: int = 0
+    military_strength: int = 0
+    cities_seen: int = 0
+    science_vp: int = 0
+    tourism: int = 0
+    tourists: int = 0
+    religion_converts: int = 0
+    diplo_vp: int = 0
+    era: int = 0
 
 
 @dataclass

@@ -75,7 +75,7 @@ if list then
                             if wPlot then
                                 local wOwner = wPlot:GetOwner()
                                 if wOwner and wOwner >= 0 and PlayerConfigurations[wOwner] then
-                                    local civShort = Locale.Lookup(PlayerConfigurations[wOwner]:GetCivilizationShortDescription())
+                                    local civShort = ((Players[wOwner] and Players[wOwner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(wOwner)) and "an unmet civilization" or Locale.Lookup(PlayerConfigurations[wOwner]:GetCivilizationShortDescription()))
                                     if civShort then msg = msg .. " [" .. civShort .. "]" end
                                 end
                                 local dt = wPlot:GetDistrictType()

@@ -225,7 +225,7 @@ for dy = -r, r do
                         local cfg = PlayerConfigurations[owner]
                         local p = Players[owner]
                         if cfg and p and p:IsAlive() then
-                            ownerName = Locale.Lookup(cfg:GetCivilizationShortDescription())
+                            ownerName = ((Players[owner] and Players[owner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(owner)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription()))
                             if not p:IsMajor() then ownerName = ownerName .. ":CS" end
                         elseif owner == 63 then
                             ownerName = "Barbarian"
@@ -251,7 +251,7 @@ for dy = -r, r do
                                         if i == 63 then label = "Barbarian"
                                         else
                                             local oCfg = PlayerConfigurations[i]
-                                            label = Locale.Lookup(oCfg:GetCivilizationShortDescription())
+                                            label = ((Players[i] and Players[i]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(i)) and "an unmet civilization" or Locale.Lookup(oCfg:GetCivilizationShortDescription()))
                                         end
                                         table.insert(uParts, label .. " " .. ut:gsub("UNIT_", ""))
                                     end

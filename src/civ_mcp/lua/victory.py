@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from civ_mcp.lua._helpers import _LUA_VICTORY_ENABLED, SENTINEL, _int
 from civ_mcp.lua.models import (
-    DemographicEntry,
     SpaceProject,
     VictoryPlayerProgress,
     VictoryProgress,
@@ -35,11 +34,12 @@ for i = 0, 62 do
                 if creator >= 0 and creator ~= me then
                     local rEntry = GameInfo.Religions[majRel]
                     local relName = rEntry and Locale.Lookup(rEntry.Name) or "Unknown"
+                    -- Fair play: only name the founder if met (Religion tab of World Rankings).
                     if pDiplo:HasMet(creator) then
                         local cfg = PlayerConfigurations[creator]
                         relOwner[majRel] = Locale.Lookup(cfg:GetCivilizationShortDescription()) .. "|" .. relName
                     else
-                        relOwner[majRel] = "Unknown civilization|" .. relName
+                        relOwner[majRel] = "an unmet civilization|" .. relName
                     end
                 end
             end
@@ -77,7 +77,7 @@ def build_victory_progress_query() -> str:
     """Build a Lua query for victory progress of all players (InGame context).
 
     Outputs lines:
-      PLAYER|pid|name|score|sciVP|sciNeeded|diploVP|tourism|milStr|techs|civics|relCities|staycationers|hasReligion
+      PLAYER|pid|name|score|sciVP|sciNeeded|diploVP|tourism|milStr|techs|civics(always 0)|relCities|staycationers|hasReligion|numCitiesSeen
       CULTURE|civName|ourTourists|theirStaycationers|dominant
       CAPITAL|civName|holdsOwn
       RELMAJ|civName|religionName
@@ -87,7 +87,9 @@ local me = Game.GetLocalPlayer()
 local pDiplo = Players[me]:GetDiplomacy()
 local pCul = Players[me]:GetCulture()
 
-local dPop, dMil, dFood, dGold, dLand, dProd = {{}}, {{}}, {{}}, {{}}, {{}}, {{}}
+-- Fair play (World Rankings): no per-turn yields, no civics count, no
+-- demographics aggregates over all civs. Met civs only.
+local vis = PlayersVisibility[me]
 for i = 0, 62 do
     local p = Players[i]
     if p and p:IsMajor() and p:IsAlive() then
@@ -102,25 +104,28 @@ for i = 0, 62 do
             local tourism = st:GetTourism()
             local milStr = st:GetMilitaryStrength()
             local techs = st:GetNumTechsResearched()
-            local civics = st:GetNumCivicsCompleted()
+            local civics = 0
             local relCities = st:GetNumCitiesFollowingReligion()
             local stay = p:GetCulture():GetStaycationers()
             local hasRel = p:GetReligion():GetReligionTypeCreated() >= 0
-            local nCities = 0; for _ in p:GetCities():Members() do nCities = nCities + 1 end
-            local pSci = p:GetTechs():GetScienceYield()
-            local pCulYield = p:GetCulture():GetCultureYield()
-            local pGold2 = p:GetTreasury():GetGoldYield() - p:GetTreasury():GetTotalMaintenance()
+            -- cities counted only where the plot is revealed to us (own cities: all)
+            local nCities = 0
+            for _, c in p:GetCities():Members() do
+                if i == me or vis:IsRevealed(c:GetX(), c:GetY()) then nCities = nCities + 1 end
+            end
             -- Space race: count spaceports
             local spaceports = 0
             for _, city in p:GetCities():Members() do
+              if i == me or vis:IsVisible(city:GetX(), city:GetY()) then
                 for _, d in city:GetDistricts():Members() do
                     local dInfo = GameInfo.Districts[d:GetType()]
                     if dInfo and dInfo.DistrictType == "DISTRICT_SPACEPORT" and d:IsComplete() then
                         spaceports = spaceports + 1
                     end
                 end
+              end
             end
-            print("PLAYER|" .. i .. "|" .. name .. "|" .. p:GetScore() .. "|" .. sciVP .. "|" .. sciNeeded .. "|" .. diploVP .. "|" .. tourism .. "|" .. milStr .. "|" .. techs .. "|" .. civics .. "|" .. relCities .. "|" .. stay .. "|" .. tostring(hasRel) .. "|" .. nCities .. "|" .. string.format("%.1f", pSci) .. "|" .. string.format("%.1f", pCulYield) .. "|" .. string.format("%.1f", pGold2))
+            print("PLAYER|" .. i .. "|" .. name .. "|" .. p:GetScore() .. "|" .. sciVP .. "|" .. sciNeeded .. "|" .. diploVP .. "|" .. tourism .. "|" .. milStr .. "|" .. techs .. "|" .. civics .. "|" .. relCities .. "|" .. stay .. "|" .. tostring(hasRel) .. "|" .. nCities)
             print("SPACE|" .. name .. "|" .. spaceports .. "|" .. sciVP .. "/" .. sciNeeded)
             if i == me then
                 -- Space project chain detail (our player only)
@@ -219,44 +224,8 @@ for i = 0, 62 do
                 print("RELFOUNDED|" .. name .. "|" .. fName)
             end
         end
-        -- Demographics: collect for ALL alive majors (anonymized aggregates)
-        local totalPop = 0
-        local totalFood, totalProd = 0, 0
-        local ownedPlots = 0
-        for _, c in p:GetCities():Members() do
-            totalPop = totalPop + c:GetPopulation()
-            totalFood = totalFood + c:GetYield(0)
-            totalProd = totalProd + c:GetYield(1)
-            local ok, pp = pcall(function() return Map.GetCityPlots():GetPurchasedPlots(c) end)
-            if ok and pp then ownedPlots = ownedPlots + #pp end
-        end
-        local milVal = p:GetStats():GetMilitaryStrength()
-        local netGold = p:GetTreasury():GetGoldYield() - p:GetTreasury():GetTotalMaintenance()
-        table.insert(dPop, {{v=totalPop, mine=(i==me)}})
-        table.insert(dMil, {{v=milVal, mine=(i==me)}})
-        table.insert(dFood, {{v=totalFood, mine=(i==me)}})
-        table.insert(dGold, {{v=netGold, mine=(i==me)}})
-        table.insert(dLand, {{v=ownedPlots, mine=(i==me)}})
-        table.insert(dProd, {{v=totalProd, mine=(i==me)}})
     end
 end
-local function emitDemo(label, arr)
-    table.sort(arr, function(a, b) return a.v > b.v end)
-    local best, worst, total = arr[1].v, arr[#arr].v, 0
-    local myRank, myVal = 0, 0
-    for idx, e in ipairs(arr) do
-        total = total + e.v
-        if e.mine then myRank = idx; myVal = e.v end
-    end
-    local avg = total / #arr
-    print("DEMO|" .. label .. "|" .. myRank .. "|" .. string.format("%.1f", myVal) .. "|" .. string.format("%.1f", best) .. "|" .. string.format("%.1f", avg) .. "|" .. string.format("%.1f", worst))
-end
-emitDemo("Population", dPop)
-emitDemo("Soldiers", dMil)
-emitDemo("CropYield", dFood)
-emitDemo("GNP", dGold)
-emitDemo("Land", dLand)
-emitDemo("Goods", dProd)
 local nMajors = 0
 local nRels = 0
 for i = 0, 62 do
@@ -281,7 +250,6 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
     rel_founded_names: dict[str, str] = {}
     religions_founded = 0
     religions_max = 0
-    demographics: dict[str, DemographicEntry] = {}
     space_projects: list[SpaceProject] = []
     enabled_victories: set[str] = set()
 
@@ -306,9 +274,6 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
                     staycationers=_int(p[12]),
                     has_religion=p[13] == "true",
                     num_cities=_int(p[14]) if len(p) > 14 else 0,
-                    science_yield=float(p[15]) if len(p) > 15 else 0.0,
-                    culture_yield=float(p[16]) if len(p) > 16 else 0.0,
-                    gold_yield=float(p[17]) if len(p) > 17 else 0.0,
                 )
             )
         elif line.startswith("SPACE|"):
@@ -360,16 +325,6 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
                         city_name=p[9] if len(p) > 9 else "",
                     )
                 )
-        elif line.startswith("DEMO|"):
-            p = line.split("|")
-            if len(p) >= 6:
-                demographics[p[1]] = DemographicEntry(
-                    rank=int(p[2]),
-                    value=float(p[3]),
-                    best=float(p[4]),
-                    average=float(p[5]),
-                    worst=float(p[6]) if len(p) > 6 else float(p[5]),
-                )
         elif line.startswith("VENABLED|"):
             enabled_victories.add(line.split("|", 1)[1])
 
@@ -382,7 +337,6 @@ def parse_victory_progress_response(lines: list[str]) -> VictoryProgress:
         religion_founded_names=rel_founded_names,
         religions_founded=religions_founded,
         religions_max=religions_max,
-        demographics=demographics,
         space_projects=space_projects,
         enabled_victories=enabled_victories,
     )

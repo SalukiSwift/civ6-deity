@@ -351,48 +351,50 @@ async def _check_empire_warnings(
         try:
             rival_lines = await gs.conn.execute_write(lq.build_rival_snapshot_query())
             rivals = lq.parse_rival_snapshot_response(rival_lines)
-            if rivals and overview:
-                our_sci = overview.science_yield
-                # Compute science rankings
-                all_sci = [(r.name, r.sci) for r in rivals] + [("You", our_sci)]
-                all_sci.sort(key=lambda x: x[1], reverse=True)
-                our_rank = next(i + 1 for i, (n, _) in enumerate(all_sci) if n == "You")
-                leader_name, leader_sci = all_sci[0]
-                if our_rank > 1 and len(all_sci) > 2:
+            if rivals:
+                # Fair play: techs researched and military strength are World
+                # Rankings values; per-turn yields of rivals are not shown.
+                our_lines = await gs.conn.execute_read(
+                    "local me = Game.GetLocalPlayer(); "
+                    "local st = Players[me]:GetStats(); "
+                    'print(st:GetNumTechsResearched() .. "|" .. st:GetMilitaryStrength()); '
+                    'print("---END---")'
+                )
+                our_techs, our_mil = 0, 0
+                if our_lines and "|" in our_lines[0]:
+                    try:
+                        a, b = our_lines[0].split("|")[:2]
+                        our_techs, our_mil = int(float(a)), int(float(b))
+                    except ValueError:
+                        pass
+                all_techs = [(r.name, r.techs) for r in rivals] + [("You", our_techs)]
+                all_techs.sort(key=lambda x: x[1], reverse=True)
+                our_rank = next(i + 1 for i, (n, _) in enumerate(all_techs) if n == "You")
+                leader_name, leader_techs = all_techs[0]
+                if our_rank > 1 and len(all_techs) > 2:
                     events.append(
                         lq.TurnEvent(
                             priority=2,
                             category="scoreboard",
                             message=(
-                                f"SCOREBOARD: Your science ({our_sci:.1f}/t) ranks "
-                                f"{our_rank} of {len(all_sci)}. "
-                                f"Leader: {leader_name} at {leader_sci:.1f}/t."
+                                f"SCOREBOARD: Your technologies ({our_techs}) rank "
+                                f"{our_rank} of {len(all_techs)} among civs you have met. "
+                                f"Leader: {leader_name} with {leader_techs}."
                             ),
                         )
                     )
 
-                # Military disparity
-                our_mil_lines = await gs.conn.execute_read(
-                    "local me = Game.GetLocalPlayer(); "
-                    "print(Players[me]:GetStats():GetMilitaryStrength()); "
-                    'print("---END---")'
-                )
-                our_mil = 0
-                if our_mil_lines:
-                    try:
-                        our_mil = int(float(our_mil_lines[0]))
-                    except (ValueError, IndexError):
-                        pass
+                # Military disparity (World Rankings, Domination tab)
                 if our_mil > 0:
                     for r in rivals:
-                        if r.mil >= our_mil * 2:
+                        if r.military_strength >= our_mil * 2:
                             events.append(
                                 lq.TurnEvent(
                                     priority=2,
                                     category="military",
                                     message=(
-                                        f"MILITARY WARNING: {r.name} has {r.mil} military "
-                                        f"({r.mil / our_mil:.1f}x ours at {our_mil})."
+                                        f"MILITARY WARNING: {r.name} has {r.military_strength} "
+                                        f"military ({r.military_strength / our_mil:.1f}x ours at {our_mil})."
                                     ),
                                 )
                             )

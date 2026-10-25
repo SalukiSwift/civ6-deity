@@ -121,7 +121,7 @@ class GameState:
         lines = await self.conn.execute_write(lq.build_diary_full_query())
         return lq.parse_diary_full_response(lines)
 
-    async def get_rival_snapshot(self) -> list[lq.RivalSnapshot]:
+    async def get_rival_snapshot(self) -> list[lq.RivalRow]:
         """Lightweight per-rival stats for diary entries."""
         lines = await self.conn.execute_write(lq.build_rival_snapshot_query())
         return lq.parse_rival_snapshot_response(lines)

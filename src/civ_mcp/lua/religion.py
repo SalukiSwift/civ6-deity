@@ -302,7 +302,7 @@ for pid = 0, 62 do
             local civName = Locale.Lookup(cfg:GetCivilizationShortDescription())
             for _, c in p:GetCities():Members() do
                 local cx, cy = c:GetX(), c:GetY()
-                if pid == me or pVis:IsRevealed(cx, cy) then
+                if pid == me or pVis:IsVisible(cx, cy) then
                     local cityName = Locale.Lookup(c:GetName())
                     local cityRel = c:GetReligion()
                     local majRel = cityRel:GetMajorityReligion()
@@ -335,7 +335,8 @@ local relTotals = {}
 local nMajors = 0
 for i = 0, 62 do
     local p = Players[i]
-    if p and p:IsMajor() and p:IsAlive() then
+    -- Fair play: only ourselves and met civs (World Rankings Religion tab)
+    if p and p:IsMajor() and p:IsAlive() and (i == me or pDiplo:HasMet(i)) then
         nMajors = nMajors + 1
         local majRel = p:GetReligion():GetReligionInMajorityOfCities()
         if majRel >= 0 then

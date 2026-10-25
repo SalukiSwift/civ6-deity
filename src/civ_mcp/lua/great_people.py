@@ -138,7 +138,7 @@ for _, entry in ipairs(timeline) do
         local claimant = "Unclaimed"
         if entry.Claimant and entry.Claimant >= 0 then
             local cfg = PlayerConfigurations[entry.Claimant]
-            if cfg then claimant = Locale.Lookup(cfg:GetCivilizationShortDescription()) end
+            if cfg then claimant = ((Players[entry.Claimant] and Players[entry.Claimant]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(entry.Claimant)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) end
         end
         local myPoints = 0
         local threshold = entry.Cost or 0

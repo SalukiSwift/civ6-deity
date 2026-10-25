@@ -10,6 +10,8 @@ import os
 import time
 from pathlib import Path
 
+from civ_mcp.diary import identity_hash
+
 log = logging.getLogger(__name__)
 
 HEARTBEAT_PATH = Path.home() / ".civ6-mcp" / "heartbeat.json"
@@ -53,7 +55,7 @@ def write(phase: str, turn: int = 0) -> None:
             "pid": os.getpid(),
             "run_id": _run_id,
             "civ": _civ,
-            "seed": _seed,
+            "seed": identity_hash(_seed),  # hashed: raw seed regenerates the map
             "model_id": _model_id,
             "scenario_id": _scenario_id,
         }

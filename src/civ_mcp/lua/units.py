@@ -276,7 +276,7 @@ pcall(function()
                 local civName = "player " .. owner
                 pcall(function()
                     local cfg = PlayerConfigurations[owner]
-                    civName = cfg and Locale.Lookup(cfg:GetCivilizationShortDescription()) or civName
+                    civName = cfg and ((Players[owner] and Players[owner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(owner)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) or civName
                 end)
                 local isMajor = true
                 pcall(function() isMajor = Players[owner]:IsMajor() end)
@@ -785,6 +785,8 @@ for pid = 0, 63 do
         if pid ~= 63 then
             local cfg = PlayerConfigurations[pid]
             if cfg then ownerName = Locale.Lookup(cfg:GetCivilizationShortDescription()) end
+            -- Fair play: do not name civilizations we have not met
+            if isMajor and not pDiplo:HasMet(pid) then ownerName = "an unmet civilization" end
         end
         for _, bu in Players[pid]:GetUnits():Members() do
             local bx, by = bu:GetX(), bu:GetY()
@@ -1682,7 +1684,7 @@ for dy = -r, r do
                 if ow >= 0 then
                     local ocfg, op = PlayerConfigurations[ow], Players[ow]
                     if ocfg and op and op:IsAlive() then
-                        ownerName = Locale.Lookup(ocfg:GetCivilizationShortDescription())
+                        ownerName = ((Players[ow] and Players[ow]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(ow)) and "an unmet civilization" or Locale.Lookup(ocfg:GetCivilizationShortDescription()))
                         if not op:IsMajor() then ownerName = ownerName .. ":CS" end
                     elseif ow == 63 then
                         ownerName = "Barbarian"
@@ -1711,7 +1713,7 @@ for dy = -r, r do
                                 local ownerLabel = "Barbarian"
                                 if pid ~= 63 then
                                     local cfg = PlayerConfigurations[pid]
-                                    if cfg then ownerLabel = Locale.Lookup(cfg:GetCivilizationShortDescription()) end
+                                    if cfg then ownerLabel = ((Players[pid] and Players[pid]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(pid)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) end
                                 end
                                 table.insert(uParts, ownerLabel .. " " .. nm:gsub("UNIT_", ""))
                             end

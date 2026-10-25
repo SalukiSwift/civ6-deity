@@ -11,7 +11,7 @@ from civ_mcp.lua.models import (
     GameOverview,
     PlayerRow,
     ReligionInfo,
-    RivalSnapshot,
+    RivalRow,
     ScoreEntry,
 )
 
@@ -624,91 +624,87 @@ def parse_overview_response(lines: list[str]) -> GameOverview:
 
 
 def build_rival_snapshot_query() -> str:
-    """Lightweight per-rival stats for diary power curves. InGame context.
+    """Per-rival World Rankings data for MET civs only. InGame context.
 
-    Output: one RIVAL| line per met major civ (excluding self).
-    Format: RIVAL|pid|name|score|cities|pop|sci|cul|gold|mil|techs|civics|faith|sciVP|diploVP|resources
-    resources: comma-separated RESOURCE:amount pairs for non-zero stockpiles, e.g. IRON:5,HORSES:2
+    Fair-play screen mapping (what a human sees):
+      ribbon: score, era
+      World Rankings: techs researched (Science tab), space project VP
+      (Science), tourism and tourists (Culture), military strength
+      (Domination), civs converted (Religion), diplomatic VP (Diplomatic).
+    Deliberately absent: science/culture/gold/faith per turn, civics count,
+    strategic stockpiles, population. cities_seen counts only the rival's
+    cities on plots the local player has revealed.
+
+    Output: RIVAL|pid|name|score|era|techs|mil|citiesSeen|sciVP|tourism|tourists|converts|diploVP
     """
     return (
         "local me = Game.GetLocalPlayer() "
         "local pDiplo = Players[me]:GetDiplomacy() "
+        "local vis = PlayersVisibility[me] "
         "for i = 0, 62 do "
         "  if i ~= me and Players[i] and Players[i]:IsMajor() and Players[i]:IsAlive() and pDiplo:HasMet(i) then "
         "    local cfg = PlayerConfigurations[i] "
         "    local name = Locale.Lookup(cfg:GetCivilizationShortDescription()) "
         "    local p = Players[i] "
         "    local score = p:GetScore() "
-        "    local nCities, totalPop = 0, 0 "
-        "    for _, c in p:GetCities():Members() do nCities = nCities + 1; totalPop = totalPop + c:GetPopulation() end "
-        "    local sci = p:GetTechs():GetScienceYield() "
-        "    local cul = p:GetCulture():GetCultureYield() "
-        "    local gold = p:GetTreasury():GetGoldYield() - p:GetTreasury():GetTotalMaintenance() "
+        "    local era = 0 "
+        "    pcall(function() era = p:GetEra() end) "
+        "    local seen = 0 "
+        "    for _, c in p:GetCities():Members() do "
+        "      if vis:IsRevealed(c:GetX(), c:GetY()) then seen = seen + 1 end "
+        "    end "
         "    local st = p:GetStats() "
         "    local mil = st:GetMilitaryStrength() "
         "    local techs = st:GetNumTechsResearched() "
-        "    local civics = st:GetNumCivicsCompleted() "
         "    local sciVP = st:GetScienceVictoryPoints() "
         "    local diploVP = st:GetDiplomaticVictoryPoints() "
-        "    local faith = 0 "
-        "    pcall(function() faith = p:GetReligion():GetFaithBalance() end) "
-        '    local resStr = "" '
-        "    local pRes = p:GetResources() "
-        "    for row in GameInfo.Resources() do "
-        '      if row.ResourceClassType == "RESOURCECLASS_STRATEGIC" then '
-        "        local amt = 0 "
-        "        pcall(function() amt = pRes:GetResourceAmount(row.Index) end) "
-        "        if amt and amt > 0 then "
-        '          local rName = row.ResourceType:gsub("RESOURCE_", "") '
-        '          resStr = resStr .. (resStr ~= "" and "," or "") .. rName .. ":" .. amt '
+        "    local tourism = 0 "
+        "    pcall(function() tourism = st:GetTourism() end) "
+        "    local tourists = 0 "
+        "    pcall(function() tourists = p:GetCulture():GetTouristsTo() end) "
+        "    local converts = 0 "
+        "    local myRel = p:GetReligion():GetReligionTypeCreated() "
+        "    if myRel ~= nil and myRel >= 0 then "
+        "      for j = 0, 62 do "
+        "        if Players[j] and Players[j]:IsMajor() and Players[j]:IsAlive() and (j == me or pDiplo:HasMet(j) or j == i) then "
+        "          local ok, r = pcall(function() return Players[j]:GetReligion():GetReligionInMajorityOfCities() end) "
+        "          if ok and r == myRel then converts = converts + 1 end "
         "        end "
         "      end "
         "    end "
-        '    print("RIVAL|" .. i .. "|" .. name .. "|" .. score .. "|" .. nCities .. "|" .. totalPop '
-        '      .. "|" .. string.format("%.1f", sci) .. "|" .. string.format("%.1f", cul) '
-        '      .. "|" .. string.format("%.1f", gold) .. "|" .. mil .. "|" .. techs .. "|" .. civics '
-        '      .. "|" .. string.format("%.1f", faith) .. "|" .. sciVP .. "|" .. diploVP .. "|" .. resStr) '
+        '    print("RIVAL|" .. i .. "|" .. name .. "|" .. score .. "|" .. era .. "|" .. techs '
+        '      .. "|" .. mil .. "|" .. seen .. "|" .. sciVP .. "|" .. tourism .. "|" .. tourists '
+        '      .. "|" .. converts .. "|" .. diploVP) '
         "  end "
         "end "
         f'print("{SENTINEL}")'
     )
 
 
-def parse_rival_snapshot_response(lines: list[str]) -> list[RivalSnapshot]:
+def parse_rival_snapshot_response(lines: list[str]) -> list[RivalRow]:
     """Parse RIVAL| lines from build_rival_snapshot_query."""
     rivals = []
     for line in lines:
         if not line.startswith("RIVAL|"):
             continue
         p = line.split("|")
-        if len(p) < 15:
+        if len(p) < 13:
             continue
-        stockpiles = {}
-        if len(p) > 15 and p[15]:
-            for pair in p[15].split(","):
-                if ":" in pair:
-                    k, v = pair.split(":", 1)
-                    try:
-                        stockpiles[k] = int(v)
-                    except ValueError:
-                        pass
         rivals.append(
-            RivalSnapshot(
-                id=int(p[1]),
+            RivalRow(
+                player_id=int(p[1]),
                 name=p[2],
+                met=True,
                 score=_int(p[3]),
-                cities=_int(p[4]),
-                pop=_int(p[5]),
-                sci=round(float(p[6]), 1),
-                cul=round(float(p[7]), 1),
-                gold=round(float(p[8]), 1),
-                mil=_int(p[9]),
-                techs=_int(p[10]),
-                civics=_int(p[11]),
-                faith=round(float(p[12]), 1),
-                sci_vp=_int(p[13]),
-                diplo_vp=_int(p[14]),
-                stockpiles=stockpiles,
+                era=_int(p[4]),
+                techs=_int(p[5]),
+                military_strength=_int(p[6]),
+                cities_seen=_int(p[7]),
+                science_vp=_int(p[8]),
+                tourism=_int(p[9]),
+                tourists=_int(p[10]),
+                religion_converts=_int(p[11]),
+                diplo_vp=_int(p[12]),
             )
         )
     return rivals
@@ -722,7 +718,7 @@ def parse_rival_snapshot_response(lines: list[str]) -> list[RivalSnapshot]:
 def build_diary_full_query() -> str:
     """Single InGame round-trip: full per-turn snapshot for diary JSONL.
 
-    Emits per-player lines (all alive major civs, omniscient):
+    Emits per-player lines (local player only; fog seal):
         PLAYER|pid|civ|leader|score|cities|pop|sci|cul|gold|goldPT|
               faith|faithPT|favor|favorPT|mil|techsN|civicsN|
               districts|wonders|greatWorks|territory|improvements|
@@ -764,7 +760,7 @@ def build_diary_full_query() -> str:
         "local aliveMajors = {} "
         "local aliveVis = {} "
         "for i = 0, 62 do "
-        "  if Players[i] and Players[i]:IsMajor() and Players[i]:IsAlive() then "
+        "  if i == me and Players[i] and Players[i]:IsAlive() then "
         "    aliveMajors[#aliveMajors+1] = i "
         "    aliveVis[i] = PlayersVisibility[i] "
         "  end "
@@ -794,9 +790,9 @@ def build_diary_full_query() -> str:
         "for b in GameInfo.Buildings() do hashName[b.Hash] = b.BuildingType end "
         "for d in GameInfo.Districts() do hashName[d.Hash] = d.DistrictType end "
         "for pr in GameInfo.Projects() do hashName[pr.Hash] = pr.ProjectType end "
-        # === Player loop (omniscient — all alive major civs) ===
+        # === Player loop: LOCAL PLAYER ONLY (fog seal: no rival rows, no foreign cities) ===
         "for i = 0, 62 do "
-        "if Players[i] and Players[i]:IsMajor() and Players[i]:IsAlive() then "
+        "if i == me and Players[i] and Players[i]:IsAlive() then "
         "  local p = Players[i] "
         "  local cfg = PlayerConfigurations[i] "
         "  local civName = Locale.Lookup(cfg:GetCivilizationShortDescription()) "

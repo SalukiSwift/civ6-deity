@@ -102,7 +102,7 @@ for _, city in Players[me]:GetCities():Members() do
                 local ownerName = "Domestic"
                 if not isDom then
                     pcall(function()
-                        ownerName = Locale.Lookup(PlayerConfigurations[r.DestinationCityPlayer]:GetCivilizationShortDescription())
+                        ownerName = ((Players[r.DestinationCityPlayer] and Players[r.DestinationCityPlayer]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(r.DestinationCityPlayer)) and "an unmet civilization" or Locale.Lookup(PlayerConfigurations[r.DestinationCityPlayer]:GetCivilizationShortDescription()))
                     end)
                 end
                 -- City-state + quest
@@ -173,8 +173,8 @@ print("{SENTINEL}")
 def build_trade_destinations_query(unit_index: int) -> str:
     """List valid trade route destinations with yields, quests, and pressure.
 
-    Tries CanStartOperation first.  If ALL destinations fail (capacity bug
-    from stale route counts), falls back to listing reachable cities directly.
+    Uses CanStartOperation only; if every destination fails the result is
+    "no valid destinations" (no omniscient fallback listing of foreign cities).
     Enriches each destination with yield preview, religious pressure,
     city-state quest status, and trading post info.
     """
@@ -204,7 +204,10 @@ end
 local function enrichDest(i, city, cx, cy, isDom)
     local civ = "Domestic"
     if not isDom then
-        pcall(function() civ = Locale.Lookup(PlayerConfigurations[i]:GetCivilizationShortDescription()) end)
+        -- unmet majors are not named
+        local unmet = Players[i]:IsMajor() and not Players[me]:GetDiplomacy():HasMet(i)
+        if unmet then civ = "an unmet civilization"
+        else pcall(function() civ = Locale.Lookup(PlayerConfigurations[i]:GetCivilizationShortDescription()) end) end
     end
     local isCS = false
     pcall(function() isCS = Players[i]:GetInfluence():CanReceiveInfluence() end)
@@ -254,7 +257,8 @@ for i = 0, 62 do
             tParams[UnitOperationTypes.PARAM_Y0] = cy
             tParams[UnitOperationTypes.PARAM_X1] = ux
             tParams[UnitOperationTypes.PARAM_Y1] = uy
-            local can = UnitManager.CanStartOperation(unit, opHash, nil, tParams, true)
+            local can = (i == me or PlayersVisibility[me]:IsRevealed(cx, cy))
+                and UnitManager.CanStartOperation(unit, opHash, nil, tParams, true)
             if can then
                 enrichDest(i, city, cx, cy, i == me)
                 found = found + 1
@@ -271,25 +275,7 @@ if found == 0 then
     else
         print("WARN:CANNOT_START|CanStartOperation blocked all destinations.")
     end
-    for i = 0, 62 do
-        if Players[i]:IsAlive() and i ~= 63 then
-            local atWar = false
-            if i ~= me then
-                pcall(function()
-                    local pDiplo = Players[me]:GetDiplomacy()
-                    if pDiplo then atWar = pDiplo:IsAtWarWith(i) end
-                end)
-            end
-            if not atWar then
-                for _, city in Players[i]:GetCities():Members() do
-                    local cx, cy = city:GetX(), city:GetY()
-                    if cx ~= ux or cy ~= uy then
-                        enrichDest(i, city, cx, cy, i == me)
-                    end
-                end
-            end
-        end
-    end
+    -- Fair play: no omniscient fallback listing; return no valid destinations.
 end
 print("{SENTINEL}")
 """

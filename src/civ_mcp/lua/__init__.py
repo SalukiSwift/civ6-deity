@@ -197,7 +197,7 @@ from civ_mcp.lua.models import (  # noqa: F401
     ReligionStatus,
     ReligionSummary,
     ResourceStockpile,
-    RivalSnapshot,
+    RivalRow,
     ScoreEntry,
     SettleCandidate,
     SpyInfo,
