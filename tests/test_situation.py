@@ -197,3 +197,47 @@ def test_get_situation_tool_registered_readonly():
     from civ_mcp import server
     tools = {t.name: t for t in server.mcp._tool_manager.list_tools()}
     assert tools["get_situation"].annotations.readOnlyHint is True
+
+
+def test_parse_units_promotion_flag_and_board_line():
+    line = "5|5|Warrior|UNIT_WARRIOR|3,4|2/2|100/100|20|0|0||1|0||0||"
+    u = lq.parse_units_response([line])[0]
+    assert u.needs_promotion is True
+    assert "promotions available: 5" in format_situation(_situation(units=[u]))
+
+
+def test_units_query_checks_promote_command():
+    q = lq.build_units_query()
+    assert "UnitCommandTypes.PROMOTE" in q and 'local promo = "0"' in q
+
+
+def test_failed_units_query_shows_unavailable():
+    gs = types.SimpleNamespace()
+    async def boom(*a, **k): raise RuntimeError("x")
+    async def ov(): return _ov()
+    for n in ("get_units", "get_cities", "get_threat_scan", "get_rival_snapshot",
+              "get_trade_routes", "get_city_states", "get_governors"):
+        setattr(gs, n, boom)
+    gs.get_game_overview = ov
+    gs.conn = types.SimpleNamespace(execute_write=boom)
+    out = format_situation(asyncio.run(gather_situation(gs)))
+    att = out.split("ATTENTION")[1].split("THREATS")[0]
+    assert "(unavailable: units)" in att
+    assert "(unavailable: threats)" in out
+
+
+def test_cap_with_many_threats_and_attention_lines():
+    threats = [ThreatInfo("UNIT_HORSEMAN", i, i, 90, 100, 36, 0, i) for i in range(50)]
+    blockers = [f"choice {i}" for i in range(50)]
+    out = format_situation(_situation(threats=threats, blockers=blockers,
+                                      rivals=[_rival(f"C{i}", i) for i in range(30)]))
+    lines = out.splitlines()
+    assert len(lines) <= 40
+    for h in ("ATTENTION", "THREATS", "RIVALS"):
+        i = lines.index(h)
+        assert lines[i + 1].startswith("  ")
+
+
+def test_rivals_none_then_warnings():
+    out = format_situation(_situation(rivals=[]))
+    assert "RIVALS\n  none\n  !! DIPLOMATIC" in out

@@ -51,6 +51,7 @@ class Situation:
     trade_capacity: tuple[int, int] = (0, 0)  # (used, capacity)
     envoys_available: int = 0
     governor_titles: int = 0
+    unavailable: list[str] = field(default_factory=list)  # failed sub-queries
 
 
 def _unset(name: str) -> bool:
@@ -97,10 +98,15 @@ def _attention(s: Situation) -> list[str]:
     promo = [u.unit_id for u in s.units if u.needs_promotion]
     if promo:
         out.append(f"promotions available: {_ids(promo)}")
+    for name in s.unavailable:
+        if name not in ("threats", "rivals"):
+            out.insert(0, f"(unavailable: {name})")
     return [f"  {line}" for line in out]
 
 
 def _threats(s: Situation) -> list[str]:
+    if "threats" in s.unavailable:
+        return ["  (unavailable: threats)"]
     rows = sorted(s.threats, key=lambda t: t.distance)
     return [
         f"  {t.owner_name} {t.unit_type.replace('UNIT_', '')} at ({t.x},{t.y})"
@@ -110,6 +116,8 @@ def _threats(s: Situation) -> list[str]:
 
 
 def _rival_rows(s: Situation) -> list[str]:
+    if "rivals" in s.unavailable:
+        return ["  (unavailable: rivals)"]
     met = sorted((r for r in s.rivals if r.met), key=lambda r: r.score, reverse=True)
     return [
         f"  {r.name} score {r.score} techs {r.techs} mil {r.military_strength}"
@@ -139,26 +147,20 @@ def format_situation(s: Situation) -> str:
     budget = MAX_LINES - headers - fixed
     bodies = {"attention": attention, "threats": threats, "rivals": rivals}
     sizes = {k: max(len(v), 1) for k, v in bodies.items()}
-    # Trim rivals, then threats, then attention, each down to a floor of 3 lines.
-    for key in ("rivals", "threats", "attention"):
-        over = sum(sizes.values()) - budget
-        if over <= 0:
-            break
-        sizes[key] = max(3, sizes[key] - over)
-    over = sum(sizes.values()) - budget
-    if over > 0:  # still over with floors: shave rivals/threats/attention to 1+more
+    # Trim rivals, then threats, then attention; sections never grow. First
+    # pass keeps a row plus the "+N more" line, second pass keeps one line.
+    for floor in (2, 1):
         for key in ("rivals", "threats", "attention"):
+            over = sum(sizes.values()) - budget
             if over <= 0:
                 break
-            cut = min(over, sizes[key] - 2) if sizes[key] > 2 else 0
+            cut = min(over, max(sizes[key] - floor, 0))
             sizes[key] -= cut
-            over -= cut
 
     def body(key: str, extra: list[str] | None = None) -> list[str]:
         rows = bodies[key]
-        if not rows and not extra:
-            return ["  none"]
-        return _fit(rows, sizes[key]) + (extra or [])
+        shown = _fit(rows, sizes[key]) if rows else ["  none"]
+        return shown + (extra or [])
 
     lines = ["EMPIRE", *empire]
     lines += ["ATTENTION", *body("attention")]
@@ -173,22 +175,24 @@ async def _victory_warnings(gs: GameState) -> list[TurnEvent]:
     return await _check_victory_proximity(gs)
 
 
-async def _safe(coro, default, what: str):
+async def _safe(coro, default, what: str, failed: list[str]):
     try:
         return await coro
     except Exception:
-        log.debug("situation: %s query failed", what, exc_info=True)
+        log.warning("situation: %s query failed", what, exc_info=True)
+        failed.append(what)
         return default
 
 
 async def gather_situation(gs: GameState) -> Situation:
     overview = await gs.get_game_overview()
-    units = await _safe(gs.get_units(), [], "units")
-    cities_res = await _safe(gs.get_cities(), ([], []), "cities")
+    failed: list[str] = []
+    units = await _safe(gs.get_units(), [], "units", failed)
+    cities_res = await _safe(gs.get_cities(), ([], []), "cities", failed)
     cities = cities_res[0]
-    threats = await _safe(gs.get_threat_scan(), [], "threats")
-    rivals = await _safe(gs.get_rival_snapshot(), [], "rivals")
-    warnings = await _safe(_victory_warnings(gs), [], "victory")
+    threats = await _safe(gs.get_threat_scan(), [], "threats", failed)
+    rivals = await _safe(gs.get_rival_snapshot(), [], "rivals", failed)
+    warnings = await _safe(_victory_warnings(gs), [], "victory", failed)
 
     async def _blockers() -> list[str]:
         lines = await gs.conn.execute_write(lq.build_end_turn_blocking_query())
@@ -198,10 +202,10 @@ async def gather_situation(gs: GameState) -> Situation:
             if btype not in _COVERED_BLOCKERS
         ]
 
-    blockers = await _safe(_blockers(), [], "blockers")
-    trade = await _safe(gs.get_trade_routes(), None, "trade")
-    envoys = await _safe(gs.get_city_states(), None, "envoys")
-    govs = await _safe(gs.get_governors(), None, "governors")
+    blockers = await _safe(_blockers(), [], "blockers", failed)
+    trade = await _safe(gs.get_trade_routes(), None, "trade", failed)
+    envoys = await _safe(gs.get_city_states(), None, "envoys", failed)
+    govs = await _safe(gs.get_governors(), None, "governors", failed)
     return Situation(
         overview=overview,
         units=units,
@@ -213,4 +217,5 @@ async def gather_situation(gs: GameState) -> Situation:
         trade_capacity=(trade.active_count, trade.capacity) if trade else (0, 0),
         envoys_available=envoys.tokens_available if envoys else 0,
         governor_titles=govs.points_available if govs else 0,
+        unavailable=failed,
     )
