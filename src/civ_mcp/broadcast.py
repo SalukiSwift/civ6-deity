@@ -249,3 +249,45 @@ class Broadcast:
             if block:
                 return " | ".join(block)
         return " | ".join(ln.strip() for ln in lines[:15] if ln.strip())
+
+
+NOTEBOOK_SECTIONS = ("Standing lessons", "Game log", "Current hypothesis")
+
+
+def append_notebook_file(path: Path, section: str, text: str) -> None:
+    """Append a dated bullet under ``## <section>`` in the campaign notebook.
+
+    Creates the file and the heading if missing. Em dashes are replaced and
+    line breaks collapsed so each note stays a single bullet.
+    """
+    if section not in NOTEBOOK_SECTIONS:
+        raise ValueError(
+            f"Unknown section {section!r}; use one of: {', '.join(NOTEBOOK_SECTIONS)}"
+        )
+    clean = " ".join(text.replace("—", ", ").split())
+    if not clean:
+        raise ValueError("text required")
+    bullet = f"- {datetime.now(timezone.utc).strftime('%Y-%m-%d')}: {clean}"
+    path = Path(path)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    heading = f"## {section}"
+    if heading not in lines:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines:
+            lines.append("")
+        lines += [heading, ""]
+    start = lines.index(heading) + 1
+    end = start
+    while end < len(lines) and not lines[end].startswith("## "):
+        end += 1
+    # insert after the last non-blank line of the section
+    ins = end
+    while ins > start and not lines[ins - 1].strip():
+        ins -= 1
+    if ins == start:
+        lines[start:end] = ["", bullet, ""]
+    else:
+        lines.insert(ins, bullet)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")

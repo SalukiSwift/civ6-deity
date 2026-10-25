@@ -1,3 +1,5 @@
+> Note: this is the upstream civ6-mcp playbook, kept for reference only. It is superseded by PLAYBOOK.md in this fork.
+
 # Civ 6 MCP — Agent Reference
 
 An MCP server connecting to a live Civilization VI game via FireTuner. You can read full game state and issue commands. All commands respect game rules.

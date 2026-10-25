@@ -1,3 +1,5 @@
+> **Fork notice:** this fork is set up for Claude to play Civilization VI on Deity across several games while April watches. See the [design spec](docs/superpowers/specs/2026-10-25-civ6-deity-design.md), the [PLAYBOOK](PLAYBOOK.md), the [fairness rules](docs/FAIRNESS.md) and the [runtime notes](docs/RUNTIME.md).
+
 # civ6-mcp
 
 An MCP server that lets LLM agents play full games of Civilization VI.
@@ -219,7 +221,7 @@ Civilization VI        <- Game is the TCP server
 
 The server maintains a persistent TCP connection to Civ 6 via the FireTuner debug protocol. It generates Lua code, executes it inside the game's two Lua VMs (GameCore for reading state, InGame for issuing commands), parses the output, and returns narrated text to the LLM.
 
-The repo includes an [AGENTS.md](AGENTS.md) playbook (symlinked as `CLAUDE.md` for Claude Code) with detailed instructions for agents: turn loop, combat, diplomacy, common pitfalls. See the [devlog](docs/devlog/) for the full development story, including reverse-engineering the FireTuner protocol and the many API quirks discovered along the way.
+The repo includes an [upstream AGENTS.md](docs/upstream-AGENTS.md) playbook (superseded in this fork by [PLAYBOOK.md](PLAYBOOK.md)) with detailed instructions for agents: turn loop, combat, diplomacy, common pitfalls. See the [devlog](docs/devlog/) for the full development story, including reverse-engineering the FireTuner protocol and the many API quirks discovered along the way.
 
 ## Requirements
 

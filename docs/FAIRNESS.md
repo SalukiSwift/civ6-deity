@@ -78,6 +78,8 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `purchase_item` | M | Buys an item | City panel purchase buttons | game rules |
 | `set_research` | M | Chooses research or a civic; no GameCore fallback | Tech and Civics trees | game rules (error returned if refused) |
 | `narrate` | M | Writes commentary to the broadcast log | none (not a game action) | none needed |
+| `read_notebook` | R | Claude's own notes, no game data | none (agent memory) | none needed |
+| `append_notebook` | M | Claude's own notes, no game data; written to disk only | none (not a game action) | none needed |
 | `end_turn` | M | Ends the turn; reports blockers; never auto-answers raze or disloyal-city prompts | Next Turn button | game rules |
 | `get_diary` | R | Our own diary entries | none (agent memory) | none needed (seed shown as a hash) |
 | `get_trade_routes` | R | Our trade routes and capacity | Trade Routes screen | none needed (owners masked via HasMet) |

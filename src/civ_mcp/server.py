@@ -21,7 +21,13 @@ import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
-from civ_mcp.broadcast import ACTION_TOOLS, KINDS, Broadcast
+from civ_mcp.broadcast import (
+    ACTION_TOOLS,
+    KINDS,
+    NOTEBOOK_SECTIONS,
+    Broadcast,
+    append_notebook_file,
+)
 from civ_mcp.orders import (
     dispatch_research,
     dispatch_unit_action,
@@ -2022,6 +2028,38 @@ async def narrate(ctx: Context, kind: str, text: str) -> str:
     bc = await _bind_broadcast(ctx)
     bc.append(kind, text.strip(), turn=_get_game(ctx)._high_water_turn or None)
     return "logged"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def read_notebook(ctx: Context) -> str:
+    """Read the campaign notebook (campaign/NOTEBOOK.md): standing lessons,
+    the game log and the current hypothesis. Read it first every session."""
+    path = _get_broadcast(ctx).campaign_dir / "NOTEBOOK.md"
+    if not path.exists():
+        return "(notebook is empty)"
+    return path.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+async def append_notebook(ctx: Context, section: str, text: str) -> str:
+    """Append a dated bullet to the campaign notebook and show it in the log.
+
+    Args:
+        section: One of 'Standing lessons', 'Game log', 'Current hypothesis'
+        text: The note, one or two sentences.
+    """
+    if section not in NOTEBOOK_SECTIONS:
+        return f"Error: unknown section '{section}'. Use one of: {', '.join(NOTEBOOK_SECTIONS)}"
+    if not text.strip():
+        return "Error: text required"
+    bc = await _bind_broadcast(ctx)
+    append_notebook_file(bc.campaign_dir / "NOTEBOOK.md", section, text)
+    bc.append(
+        "lesson",
+        f"Notebook ({section}): {text.strip()}",
+        turn=_get_game(ctx)._high_water_turn or None,
+    )
+    return f"Added to '{section}'."
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
