@@ -99,6 +99,12 @@ class GameState:
                     self._run_aborted = False
                     self._advisor_calls_this_turn = 0
                     self._advisor_budget_warning = None
+                    # Turn tracking belongs to the old game too: a stale
+                    # high-water mark reads as "turn regressed" in the new one.
+                    self._high_water_turn = 0
+                    self._pending_end_turn = False
+                    self._pending_end_turn_from = None
+                    self._end_turn_blocked = False
                 self._game_identity = new_id
                 return self._game_identity
         return ("unknown", 0)

@@ -109,3 +109,5 @@ When the game is lost (capital taken, a rival's victory, or the game-over screen
 2. `append_notebook("Game log", ...)`: the same post-mortem as a short entry: game number, civ and leader, how it ended and on which turn, the cause.
 3. Add any general lessons with `append_notebook("Standing lessons", ...)` and revise `Current hypothesis`.
 4. Start a new game with `new_game(leader, why)`, still on Deity. Do not load an earlier save to retry the lost game.
+
+`new_game` called mid-game exits the current game WITHOUT saving; only call it after the postmortem entry.

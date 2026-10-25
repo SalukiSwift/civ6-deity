@@ -169,6 +169,7 @@ def expected_settings(leader: str) -> dict[str, str]:
         "map_size": s["map_size"],
         "grid": STANDARD_GRID,
         "leader": leader,
+        "turn": "1",  # a fresh game; new_game seeds the turn high-water mark from it
     }
 
 
@@ -408,8 +409,8 @@ def leader_screen_up(ocr: list[tuple[str, int, int, int, int]]) -> bool:
     return any(s in text for s in _LEADER_SCREEN_TEXT)
 
 
-def civ_window_is_foreground() -> bool:
-    """True when the foreground window belongs to a Civ 6 game process."""
+def foreground_civ_window() -> tuple[int, int] | None:
+    """(hwnd, pid) of the foreground window if a Civ 6 process owns it, else None."""
     import ctypes
     import ctypes.wintypes
     import os
@@ -420,33 +421,54 @@ def civ_window_is_foreground() -> bool:
     kernel32 = ctypes.windll.kernel32
     hwnd = user32.GetForegroundWindow()
     if not hwnd:
-        return False
+        return None
     pid = ctypes.wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
     if not handle:
-        return False
+        return None
     try:
         buf = ctypes.create_unicode_buffer(1024)
         size = ctypes.wintypes.DWORD(len(buf))
         if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-            return False
+            return None
         exe = os.path.basename(buf.value).lower()
     finally:
         kernel32.CloseHandle(handle)
-    return exe in {n.lower() for n in _PROCESS_NAMES}
+    if exe not in {n.lower() for n in _PROCESS_NAMES}:
+        return None
+    return int(hwnd), int(pid.value)
+
+
+def click_target_ok(
+    win: object, point: tuple[int, int], fg: tuple[int, int] | None
+) -> bool:
+    """May we click `point` in `win`? Only if the foreground window is a Civ 6
+    window and is `win` itself (same handle or same process), and the point
+    lies inside `win`'s client rect. `win` is a game_launcher.WindowInfo."""
+    if fg is None:
+        return False
+    fg_hwnd, fg_pid = fg
+    if fg_hwnd != win.window_id and fg_pid != win.pid:
+        return False
+    x, y = point
+    return win.x <= x < win.x + win.w and win.y <= y < win.y + win.h
 
 
 def click_begin_game_sync(
     timeout: float = 300.0,
     fallback_after: float = 120.0,
     interval: float = 2.0,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> str:
     """Wait for the BEGIN GAME button on the load screen and click it once.
 
     OCR first; if the leader screen has been up for `fallback_after` seconds
     and OCR still has not read the button, click its known position. No
-    input is sent unless a Civ 6 window is the foreground window, and at most
+    input is sent unless the window being read is the foreground window and
+    belongs to Civ 6, and the point is inside it (click_target_ok); at most
     one click is sent. Blocking; every wait is bounded by `timeout`.
 
     Returns "ocr" or "positional" (a click was sent), "not-foreground" (the
@@ -459,11 +481,13 @@ def click_begin_game_sync(
     from civ_mcp import game_launcher as gl
 
     log = logging.getLogger(__name__)
-    start = time.monotonic()
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    start = clock()
     leader_since: float | None = None
     ready = False
     saw_window = False
-    while time.monotonic() - start < timeout:
+    while clock() - start < timeout:
         win = gl._find_game_window_win32()
         if win is not None and win.w > 0 and win.h > 0:
             saw_window = True
@@ -476,7 +500,7 @@ def click_begin_game_sync(
             point = find_begin_button(ocr, win.y, win.h)
             method = "ocr"
             if point is None and leader_screen_up(ocr):
-                now = time.monotonic()
+                now = clock()
                 leader_since = leader_since if leader_since is not None else now
                 if now - leader_since >= fallback_after:
                     point = (
@@ -486,12 +510,12 @@ def click_begin_game_sync(
                     method = "positional"
             if point is not None:
                 ready = True
-                if civ_window_is_foreground():
+                if click_target_ok(win, point, foreground_civ_window()):
                     log.info("BEGIN GAME: clicking %s via %s", point, method)
                     gl._click_win32(*point)
                     return method
-                log.info("BEGIN GAME: button ready but Civ 6 is not the foreground window")
-        time.sleep(interval)
+                log.info("BEGIN GAME: button ready but this Civ 6 window is not in front")
+        sleep(interval)
     if ready:
         return "not-foreground"
     return "not-found" if saw_window else "no-window"

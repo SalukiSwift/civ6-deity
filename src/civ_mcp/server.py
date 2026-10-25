@@ -3225,6 +3225,7 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
         meta={**GAME_SETTINGS, "leader": leader},
     )
     gs = _get_game(ctx)
+    old_turn = getattr(gs, "_high_water_turn", 0) or None
     manual = (
         "\n\n"
         + settings_card(leader)
@@ -3245,6 +3246,13 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
         result.timings,
         result.found,
     )
+    if result.left_game:
+        # Still bound to the game that was left: say so in its own log.
+        bc.append(
+            "game",
+            f"left without saving to start a new game: {why.strip()}",
+            turn=old_turn,
+        )
     if not result.ok:
         note = (
             "\n(The previous game was left without saving; its autosaves remain.)"
@@ -3252,6 +3260,19 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
             else ""
         )
         return result.message + note + ("" if result.click else manual)
+
+    # New identity: resets the per-game state (turn high-water mark, pending
+    # end turn, snapshots) left over from any previous game, then seed the
+    # high-water mark from the verified turn (1).
+    try:
+        await gs.get_game_identity()
+    except Exception:  # noqa: BLE001
+        log.warning("new_game: identity refresh failed", exc_info=True)
+    turn = result.found.get("turn", "")
+    gs._high_water_turn = int(turn) if turn.isdigit() else 0
+    gs._pending_end_turn = False
+    gs._pending_end_turn_from = None
+    gs._end_turn_blocked = False
 
     # The overview's own difficulty read must agree (it is what the agent sees).
     try:
@@ -3266,11 +3287,10 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
             "for inspection."
         )
     bc = await _bind_broadcast(ctx)
-    turn = result.found.get("turn", "")
     bc.append(
         "game",
         result.message,
-        turn=int(turn) if turn.isdigit() else None,
+        turn=gs._high_water_turn or None,
         meta={**GAME_SETTINGS, "leader": leader, "click": result.click},
     )
     return result.message

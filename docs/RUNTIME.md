@@ -262,7 +262,7 @@ Verified live 2026-10-25 through the MCP tool, three times: `LEADER_GILGAMESH` (
 4. Resolves `MainMenu` by name from a fresh `LSQ:` and runs the setup Lua there (below). It answers `NEWGAME|true|nil` within 0.5 s, and the front end tears down into the load screen.
 5. Clicks BEGIN GAME on the load screen (below).
 6. Reconnects every 3 s until `InGame` and `GameCore_Tuner` are both listed, then runs the verification Lua in `InGame` and the overview's own difficulty read.
-7. Binds the broadcast (game directory named after the civ, `meta.json` leader from `pending_leader`) and logs `Game started: <leader>, Deity, Fractal, Standard, Gathering Storm`, which it also returns.
+7. If it left a game, logs `left without saving to start a new game: <why>` in that game's broadcast log. On success it refreshes the game identity (which clears the old game's turn high-water mark, pending end turn and blocker flags) and seeds the high-water mark from the verified turn (1), so `end_turn` in the new game does not report a turn regression. Then it binds the broadcast (game directory named after the civ, `meta.json` leader from `pending_leader`) and logs `Game started: <leader>, Deity, Fractal, Standard, Gathering Storm`, which it also returns.
 
 Waits are bounded: 5 connect attempts, 120 s for the menu after leaving a game, 300 s for the BEGIN GAME button, 120 s for `InGame`. On any failure it returns an error naming the step; a settings mismatch leaves the game running for inspection.
 
@@ -299,7 +299,7 @@ How it is clicked (`newgame.click_begin_game_sync`):
 - The window is captured with PrintWindow and read with Windows OCR every 2 s; capturing does not need focus.
 - Windows OCR reads the small-caps label loosely: `BEGIN (GAIME` at screen (1059, 1078). The matcher takes a short line starting with "begin" in the lower half of the window (the leader text above contains "begins your" and "to begin your" inside long lines).
 - Positional fallback: (0.414, 0.749) of the client area, used only if the leader screen has been up for 120 s without OCR reading the button. Not needed in any run.
-- Input is sent only when the foreground window belongs to a Civ 6 process (foreground window's process image name is one of the Civ 6 executables). Exactly one click, with SendInput, so the real cursor moves there. If Civ 6 is not in front, nothing is sent and the tool says to click BEGIN GAME by hand.
+- Input is sent only when the foreground window belongs to a Civ 6 process (its process image name is one of the Civ 6 executables) and is the window being read (same window handle or same process), and the click point lies inside that window's client rect (`newgame.click_target_ok`). Exactly one click, with SendInput, so the real cursor moves there. Otherwise nothing is sent and the tool says to click BEGIN GAME by hand.
 
 Measured (seconds from the tool call): Gilgamesh hosted 2.4, clicked (OCR) 42.6, `InGame` 46.0, tool returned 48.7. Amanitore (from a running game) menu back 10.1, hosted 14.2, clicked 52.2, `InGame` 55.6, returned 58.0. Tomyris hosted 2.4, clicked 40.6, `InGame` 44.0, returned 46.4. The tuner served Lua again within about 3.5 s of the click. No dialogs appeared.
 
@@ -317,7 +317,7 @@ NG|map_script|Fractal.lua             MapConfiguration.GetScript()
 NG|map_size|MAPSIZE_STANDARD
 NG|grid|84x54                         Map.GetGridSize()
 NG|leader|LEADER_GILGAMESH
-NG|turn|1
+NG|turn|1                             checked: must be 1
 ```
 
 The same Lua in `GameCore_Tuner` fails (`GetRuleSet` and `GetFavor` are InGame-only). `get_game_overview` then reported `Turn 1 | Sumeria (Gilgamesh) | Score: 0 | Deity`, `Turn 1 | Nubia (Amanitore) | ... | Deity` and `Turn 1 | Scythia (Tomyris) | ... | Deity`, each with a `Favor:` line.

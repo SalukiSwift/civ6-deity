@@ -330,3 +330,99 @@ def test_create_game_reports_mismatch_and_leaves_game():
     assert not res.ok
     assert "map_script: expected Fractal.lua, got Continents.lua" in res.message
     assert "left running" in res.message
+
+
+# -- click_begin_game_sync guard (all Windows calls faked) -------------------
+
+from civ_mcp import game_launcher as gl  # noqa: E402
+
+WIN = gl.WindowInfo(window_id=111, x=0, y=0, w=2560, h=1440, pid=4242)
+LEADER_ONLY = LIVE_OCR[:4]  # leader screen up, button label not read
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _patch_click_env(monkeypatch, ocr_at, fg, win=WIN):
+    """ocr_at(t) -> OCR lines at fake time t; fg -> foreground_civ_window()."""
+    clock = _Clock()
+    clicks: list[tuple[int, int, float]] = []
+    monkeypatch.setattr(gl, "_find_game_window_win32", lambda: win)
+    monkeypatch.setattr(gl, "_capture_window_win32", lambda hwnd: object())
+    monkeypatch.setattr(gl, "_ocr_winrt", lambda img, x, y, w, h: ocr_at(clock.t))
+    monkeypatch.setattr(gl, "_click_win32", lambda x, y: clicks.append((x, y, clock.t)))
+    monkeypatch.setattr(ng, "foreground_civ_window", lambda: fg)
+    return clock, clicks
+
+
+def _click(clock, **kw):
+    kw.setdefault("timeout", 30.0)
+    kw.setdefault("fallback_after", 10.0)
+    kw.setdefault("interval", 2.0)
+    return ng.click_begin_game_sync(clock=clock, sleep=clock.sleep, **kw)
+
+
+def test_click_never_sent_when_civ_not_in_front(monkeypatch):
+    clock, clicks = _patch_click_env(monkeypatch, lambda t: LIVE_OCR, fg=None)
+    assert _click(clock) == "not-foreground"
+    assert clicks == [] and clock.t <= 30.0 + 2.0
+
+
+def test_click_never_sent_when_front_window_is_another_civ_window(monkeypatch):
+    # A Civ 6 process is in front, but not the window being read and clicked.
+    clock, clicks = _patch_click_env(monkeypatch, lambda t: LIVE_OCR, fg=(999, 777))
+    assert _click(clock) == "not-foreground" and clicks == []
+
+
+def test_exactly_one_click_when_civ_in_front(monkeypatch):
+    clock, clicks = _patch_click_env(monkeypatch, lambda t: LIVE_OCR, fg=(111, 4242))
+    assert _click(clock) == "ocr"
+    assert [(x, y) for x, y, _ in clicks] == [(1059, 1078)]
+
+
+def test_same_process_foreground_counts_as_in_front(monkeypatch):
+    clock, clicks = _patch_click_env(monkeypatch, lambda t: LIVE_OCR, fg=(555, 4242))
+    assert _click(clock) == "ocr" and len(clicks) == 1
+
+
+def test_positional_click_only_after_fallback_after(monkeypatch):
+    # Leader screen from t=4; OCR never reads the button.
+    clock, clicks = _patch_click_env(
+        monkeypatch, lambda t: LEADER_ONLY if t >= 4 else [], fg=(111, 4242)
+    )
+    assert _click(clock, fallback_after=10.0) == "positional"
+    assert len(clicks) == 1
+    x, y, when = clicks[0]
+    assert (x, y) == (int(2560 * 0.414), int(1440 * 0.749))
+    assert when >= 4 + 10.0
+
+
+def test_no_click_and_bounded_when_button_never_shows(monkeypatch):
+    clock, clicks = _patch_click_env(
+        monkeypatch, lambda t: [("LOADING, PLEASE WAIT...", 1280, 700, 300, 20)], fg=(111, 4242)
+    )
+    assert _click(clock, timeout=20.0) == "not-found"
+    assert clicks == [] and clock.t <= 20.0 + 2.0
+
+
+def test_no_window_reported(monkeypatch):
+    clock, clicks = _patch_click_env(monkeypatch, lambda t: LIVE_OCR, fg=(111, 4242), win=None)
+    assert _click(clock, timeout=6.0) == "no-window" and clicks == []
+
+
+def test_click_target_must_be_inside_the_window():
+    win = gl.WindowInfo(window_id=111, x=100, y=50, w=800, h=600, pid=4242)
+    fg = (111, 4242)
+    assert ng.click_target_ok(win, (500, 400), fg)
+    assert not ng.click_target_ok(win, (950, 400), fg)  # right of the window
+    assert not ng.click_target_ok(win, (500, 20), fg)  # above it
+    assert not ng.click_target_ok(win, (500, 400), None)
+    assert not ng.click_target_ok(win, (500, 400), (222, 9999))

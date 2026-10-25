@@ -491,6 +491,28 @@ def _check_save_scumming(gs: GameState) -> tuple[list[lq.TurnEvent], bool]:
     return events, False
 
 
+def turn_regression_message(gs: GameState, turn_after: int | None) -> str | None:
+    """CRITICAL text when the turn fell behind the high-water mark, else None."""
+    if turn_after is None or gs._high_water_turn <= 0:
+        return None
+    if turn_after >= gs._high_water_turn - 1:
+        return None
+    from .autosave import get_autosave_for_turn
+
+    latest_autosave = get_autosave_for_turn(gs._high_water_turn)
+    log.warning(
+        "Turn regressed from %d to %d — possible wrong save loaded",
+        gs._high_water_turn,
+        turn_after,
+    )
+    return (
+        f"CRITICAL: Turn regressed from {gs._high_water_turn} to {turn_after}. "
+        f"You may have loaded the wrong save file. "
+        f"Your most recent MCP autosave is {latest_autosave}. "
+        f'Use load_game_save("{latest_autosave}") to recover.'
+    )
+
+
 async def execute_end_turn(gs: GameState) -> str:
     """End the turn with snapshot-diff event detection."""
     # 0a. Run aborted due to save scumming — refuse to advance
@@ -1360,22 +1382,9 @@ async def execute_end_turn(gs: GameState) -> str:
     gs._pending_end_turn_from = None
 
     # Turn regression detection — catch accidental wrong-save loads
-    if turn_after is not None and gs._high_water_turn > 0:
-        if turn_after < gs._high_water_turn - 1:
-            from .autosave import get_autosave_for_turn
-
-            latest_autosave = get_autosave_for_turn(gs._high_water_turn)
-            log.warning(
-                "Turn regressed from %d to %d — possible wrong save loaded",
-                gs._high_water_turn,
-                turn_after,
-            )
-            return (
-                f"CRITICAL: Turn regressed from {gs._high_water_turn} to {turn_after}. "
-                f"You may have loaded the wrong save file. "
-                f"Your most recent MCP autosave is {latest_autosave}. "
-                f'Use load_game_save("{latest_autosave}") to recover.'
-            )
+    regressed = turn_regression_message(gs, turn_after)
+    if regressed is not None:
+        return regressed
     if turn_after is not None:
         # Reset per-turn counters only on TRUE advance. Blocker turns have
         # turn_after == turn_before, so the counter must NOT reset — this

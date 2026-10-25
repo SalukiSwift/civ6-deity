@@ -89,6 +89,10 @@ class _FakeGame:
         self._difficulty = difficulty
         self._identity = identity
         self.fog = None
+        self._high_water_turn = 0
+        self._pending_end_turn = False
+        self._pending_end_turn_from = None
+        self._end_turn_blocked = False
 
     async def get_game_overview(self):
         return types.SimpleNamespace(difficulty=self._difficulty)
@@ -189,3 +193,42 @@ def test_new_game_tool_error_after_leaving_a_game_says_so(tmp_path, monkeypatch)
     out = asyncio.run(server.new_game(_ctx(Broadcast(tmp_path)), "LEADER_GILGAMESH", "x"))
     assert out.startswith("Error: the game setup Lua failed: boom")
     assert "left without saving" in out and "Fractal" in out
+
+
+def test_new_game_after_leaving_game_logs_old_game_and_resets_turn(tmp_path, monkeypatch):
+    """Post-loss flow: game at turn 40 is left, new game starts at turn 1."""
+    from civ_mcp.end_turn import turn_regression_message
+    from civ_mcp.newgame import StartResult, started_line
+
+    monkeypatch.setattr(
+        server,
+        "create_game",
+        _fake_create(
+            StartResult(
+                True,
+                started_line("LEADER_AMANITORE"),
+                found={"turn": "1"},
+                left_game=True,
+                click="ocr",
+            )
+        ),
+    )
+    bc = Broadcast(tmp_path)
+    old_dir = bc.bind_game("oldgame", "sumeria", "LEADER_GILGAMESH")
+    game = _FakeGame(identity=("civilization_nubia", 7))
+    game._high_water_turn = 40
+    game._pending_end_turn = True
+    game._end_turn_blocked = True
+    out = asyncio.run(
+        server.new_game(_ctx(bc, game), "LEADER_AMANITORE", "lost to Gilgamesh's neighbour")
+    )
+    assert out == started_line("LEADER_AMANITORE")
+    old_rows = [json.loads(r) for r in (old_dir / "log.jsonl").read_text().splitlines()]
+    left = [r for r in old_rows if r["text"].startswith("left without saving")]
+    assert left and left[0]["kind"] == "game" and left[0]["turn"] == 40
+    assert "lost to Gilgamesh's neighbour" in left[0]["text"]
+    assert bc.game_dir != old_dir
+    assert json.loads((bc.game_dir / "meta.json").read_text())["leader"] == "LEADER_AMANITORE"
+    assert game._high_water_turn == 1
+    assert game._pending_end_turn is False and game._end_turn_blocked is False
+    assert turn_regression_message(game, 2) is None
