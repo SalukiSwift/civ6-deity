@@ -125,6 +125,7 @@ from civ_mcp.lua.map import (  # noqa: F401
     build_verify_city_at,
     build_wonder_advisor_query,
     parse_district_advisor_response,
+    parse_turn_line,
     parse_empire_resources_response,
     parse_map_response,
     parse_purchasable_tiles_response,

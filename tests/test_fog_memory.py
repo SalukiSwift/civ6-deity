@@ -16,7 +16,7 @@ def _tile(x, y, visible=True, owner="Rome", imp="IMPROVEMENT_MINE", pillaged=Fal
         is_coastal=False,
         improvement=imp,
         owner_id=1,
-        visible=visible,
+        visibility="visible" if visible else "revealed",
         owner_name=owner,
         is_pillaged=pillaged,
     )

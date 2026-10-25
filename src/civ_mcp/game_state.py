@@ -199,13 +199,19 @@ class GameState:
             lq.build_map_area_query(center_x, center_y, radius)
         )
         tiles = lq.parse_map_response(lines)
-        self._remember_tiles(tiles)
+        self._remember_tiles(lq.parse_turn_line(lines), tiles)
         return tiles
 
-    def _remember_tiles(self, tiles: list[lq.TileInfo]) -> None:
-        """Feed currently-visible tiles to FogMemory and persist."""
+    def _remember_tiles(self, turn: int | None, tiles: list[lq.TileInfo]) -> None:
+        """Feed currently-visible tiles to FogMemory and persist.
+
+        ``turn`` is the live game turn printed by the query itself; fall back
+        to the last known turn only if the query did not report one.
+        """
         try:
-            self.fog.remember(self._high_water_turn or 0, tiles)
+            if turn is None:
+                turn = self._high_water_turn or 0
+            self.fog.remember(turn, tiles)
             self.fog.save()
         except Exception:
             log.warning("FogMemory update failed", exc_info=True)
@@ -291,7 +297,7 @@ class GameState:
                 pass
         # Post-move: visibility diff for discovery feedback
         blocked = "|BLOCKED" in result
-        if not blocked and self.spatial is not None and self.spatial._revealed_seeded:
+        if not blocked:
             try:
                 # Extract actual position from result
                 now_match = re.search(r"now_at:(\d+),(\d+)", result)
@@ -301,12 +307,9 @@ class GameState:
                         lq.build_post_move_visibility_query(vis_x, vis_y)
                     )
                     vis_tiles = lq.parse_post_move_visibility(vis_lines)
-                    # The post-move scan carries no owner/improvement data, so
-                    # refresh last-seen memory around the unit from a map read.
-                    try:
-                        await self.get_map_area(vis_x, vis_y, 3)
-                    except Exception:
-                        pass
+                    self._remember_post_move(vis_lines, vis_tiles)
+                    if self.spatial is None or not self.spatial._revealed_seeded:
+                        return result
                     all_revealed = {(x, y) for x, y, _ in vis_tiles}
                     newly_revealed = self.spatial.mark_revealed(all_revealed)
                     if newly_revealed:
@@ -330,6 +333,34 @@ class GameState:
             except Exception:
                 log.debug("Post-move visibility diff failed", exc_info=True)
         return result
+
+    def _remember_post_move(
+        self, lines: list[str], vis_tiles: list[tuple[int, int, dict]]
+    ) -> None:
+        """Feed last-seen memory from the single post-move visibility scan."""
+        try:
+            tiles = [
+                lq.TileInfo(
+                    x=x,
+                    y=y,
+                    terrain=m["terrain"],
+                    feature=m["feature"],
+                    resource=m["resource"],
+                    is_hills=m["hills"],
+                    is_river=False,
+                    is_coastal=False,
+                    improvement=m["improvement"],
+                    owner_id=-1,
+                    visibility="visible" if m["visible"] else "revealed",
+                    owner_name=m["owner"],
+                    is_pillaged=m["pillaged"],
+                    district=m["district"],
+                )
+                for x, y, m in vis_tiles
+            ]
+            self._remember_tiles(lq.parse_turn_line(lines), tiles)
+        except Exception:
+            log.warning("FogMemory post-move update failed", exc_info=True)
 
     async def attack_unit(self, unit_index: int, target_x: int, target_y: int) -> str:
         # Pre-attack: dismiss any blocking popups that would silently eat the attack
@@ -373,6 +404,12 @@ class GameState:
             except Exception as e:
                 log.debug("Attack followup read failed: %s", e)
 
+            if "UNSEEN" in followup:
+                return (
+                    estimate_str
+                    + result
+                    + "\n  Post-combat: target tile no longer visible; outcome unknown"
+                )
             try:
                 followup_str = _format_attack_followup(followup, local_id)
                 city_def = _extract_city_defense(followup)

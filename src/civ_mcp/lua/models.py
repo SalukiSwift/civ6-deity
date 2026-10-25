@@ -310,7 +310,6 @@ class TileInfo:
     improvement: str | None
     owner_id: int
     visibility: str = "visible"  # "visible", "revealed", or "unexplored"
-    visible: bool = False  # True only when the plot is currently in view
     is_fresh_water: bool = False
     yields: tuple[int, ...] | None = None  # (food, prod, gold, science, culture, faith)
     units: list[str] | None = None  # visible foreign units, e.g. ["Barbarian WARRIOR"]
@@ -327,6 +326,11 @@ class TileInfo:
         -1
     )  # -1=none, 0=ancient, 1=medieval, 2=industrial, 3=modern, 4=railroad
     movement_cost: int = 1  # base movement cost for land units
+
+    @property
+    def visible(self) -> bool:
+        """True only when the plot is currently in view (derived, never stored)."""
+        return self.visibility == "visible"
 
 
 @dataclass

@@ -5,6 +5,7 @@ from __future__ import annotations
 from civ_mcp.lua._helpers import (
     _ITEM_PARAM_MAP,
     _ITEM_TABLE_MAP,
+    _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
     _bail_lua,
@@ -18,11 +19,7 @@ def build_cities_query() -> str:
 local me = Game.GetLocalPlayer()
 local pVis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
-local function resVisible(resEntry)
-    if not resEntry.PrereqTech then return true end
-    local t = GameInfo.Technologies[resEntry.PrereqTech]
-    return t and pTech:HasTech(t.Index)
-end
+{RES_VISIBLE}
 local hashName = {}
 for u in GameInfo.Units() do hashName[u.Hash] = u.UnitType end
 for b in GameInfo.Buildings() do hashName[b.Hash] = b.BuildingType end
@@ -175,7 +172,7 @@ for i = 1, #cityCoords do for j = i + 1, #cityCoords do
     print("DIST|" .. cityCoords[i].name .. "|" .. cityCoords[j].name .. "|" .. d)
 end end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{RES_VISIBLE}", _LUA_RES_VISIBLE).replace("{SENTINEL}", SENTINEL)
 
 
 def build_city_attack(city_id: int, target_x: int, target_y: int) -> str:

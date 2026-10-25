@@ -466,6 +466,14 @@ async def _logged(
     logger = _get_logger(ctx)
     turn = logger._turn or "?"
     start = time.monotonic()
+    # Bind the broadcast (and with it the file-backed fog memory) on the first
+    # tool call of any kind, so early reads are remembered. Later calls only
+    # rebind via ACTION tools, which re-query the game identity.
+    if _get_broadcast(ctx).game_dir is None:
+        try:
+            await _bind_broadcast(ctx)
+        except Exception:
+            log.warning("Early broadcast bind failed", exc_info=True)
     try:
         result = await fn()
     except (LuaError, ValueError) as e:

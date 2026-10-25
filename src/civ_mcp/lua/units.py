@@ -450,6 +450,11 @@ local _me = Game.GetLocalPlayer()
 local _tp = Map.GetPlot({target_x}, {target_y})
 -- Fair play: enemy details only if the target plot is currently VISIBLE
 local _seen = _tp ~= nil and PlayersVisibility[_me]:IsVisible(_tp:GetIndex())
+if not _seen then
+    print("UNSEEN")
+    print("{SENTINEL}")
+    return
+end
 for i = 0, 63 do
     if _seen and Players[i] and Players[i]:IsAlive() then
         for _, u in Players[i]:GetUnits():Members() do
@@ -1647,6 +1652,7 @@ local me = Game.GetLocalPlayer()
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
 {_LUA_RES_VISIBLE}
+print("TURN|" .. Game.GetCurrentGameTurn())
 for dy = -r, r do
     for dx = -r, r do
         local x, y = cx + dx, cy + dy
@@ -1668,11 +1674,29 @@ for dy = -r, r do
             local camp = "0"
             -- improvement (camp) only when VISIBLE, never from fogged memory
             local ii = -1
-            if vis:IsVisible(plot:GetX(), plot:GetY()) then ii = plot:GetImprovementType() end
+            local isVis = vis:IsVisible(plot:GetX(), plot:GetY())
+            local ownerName, impName, distName = "", "none", "none"
+            if isVis then
+                ii = plot:GetImprovementType()
+                local ow = plot:GetOwner()
+                if ow >= 0 then
+                    local ocfg, op = PlayerConfigurations[ow], Players[ow]
+                    if ocfg and op and op:IsAlive() then
+                        ownerName = Locale.Lookup(ocfg:GetCivilizationShortDescription())
+                        if not op:IsMajor() then ownerName = ownerName .. ":CS" end
+                    elseif ow == 63 then
+                        ownerName = "Barbarian"
+                    end
+                end
+                local di = plot:GetDistrictType()
+                if di >= 0 and GameInfo.Districts[di] then distName = GameInfo.Districts[di].DistrictType end
+            end
             if ii >= 0 then
                 local iInfo = GameInfo.Improvements[ii]
-                if iInfo and iInfo.ImprovementType == "IMPROVEMENT_BARBARIAN_CAMP" then
-                    camp = "1"
+                if iInfo then
+                    impName = iInfo.ImprovementType
+                    if plot:IsImprovementPillaged() then impName = impName .. ":PILLAGED" end
+                    if iInfo.ImprovementType == "IMPROVEMENT_BARBARIAN_CAMP" then camp = "1" end
                 end
             end
             local units = "none"
@@ -1710,7 +1734,7 @@ for dy = -r, r do
                     end)
                 end
             end
-            print("TILE|" .. x .. "," .. y .. "|" .. terrain .. "|" .. feature .. "|" .. resource .. "|" .. hills .. "|" .. camp .. "|" .. units .. "|" .. cityName)
+            print("TILE|" .. x .. "," .. y .. "|" .. terrain .. "|" .. feature .. "|" .. resource .. "|" .. hills .. "|" .. camp .. "|" .. units .. "|" .. cityName .. "|" .. (isVis and "1" or "0") .. "|" .. ownerName .. "|" .. impName .. "|" .. distName)
         end
     end
 end
@@ -1752,6 +1776,16 @@ def parse_post_move_visibility(
             "camp": parts[6] == "1",
             "units": None if parts[7] == "none" else parts[7].split(";"),
             "city": None if parts[8] == "none" else parts[8],
+            # Live-state fields (only populated when the plot was VISIBLE)
+            "visible": len(parts) > 9 and parts[9] == "1",
+            "owner": parts[10] if len(parts) > 10 and parts[10] else None,
+            "improvement": None
+            if len(parts) <= 11 or parts[11] == "none"
+            else parts[11].removesuffix(":PILLAGED"),
+            "pillaged": len(parts) > 11 and parts[11].endswith(":PILLAGED"),
+            "district": None
+            if len(parts) <= 12 or parts[12] == "none"
+            else parts[12],
         }
         results.append((x, y, meta))
     return results
@@ -1768,11 +1802,7 @@ def build_builder_tasks_query() -> str:
 local me = Game.GetLocalPlayer()
 local pCities = Players[me]:GetCities()
 local pTech = Players[me]:GetTechs()
-local function resVisible(resEntry)
-    if not resEntry.PrereqTech then return true end
-    local t = GameInfo.Technologies[resEntry.PrereqTech]
-    return t and pTech:HasTech(t.Index)
-end
+{RES_VISIBLE}
 
 -- Gather all builders with charges
 local builders = {}
@@ -1937,7 +1967,7 @@ for _, b in ipairs(builders) do
     print("BUILDER|" .. b.id .. "|" .. b.idx .. "|" .. b.x .. "," .. b.y .. "|" .. b.charges .. "|" .. string.format("%.1f", b.moves))
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{RES_VISIBLE}", _LUA_RES_VISIBLE).replace("{SENTINEL}", SENTINEL)
 
 
 def parse_builder_tasks(

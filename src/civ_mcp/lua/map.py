@@ -45,6 +45,37 @@ for i = 0, 62 do
     end
 end
 local classPrefix = {RESOURCECLASS_STRATEGIC="S", RESOURCECLASS_LUXURY="L", RESOURCECLASS_BONUS="B"}
+-- Yield of a tile as the player may know it: live yield when the plot is
+-- VISIBLE, otherwise base terrain + feature yields only (no improvement or
+-- district contribution, which would leak live state from fogged tiles).
+local _yIdx = {YIELD_FOOD=0, YIELD_PRODUCTION=1, YIELD_GOLD=2}
+local _terrY, _featY = {}, {}
+for r in GameInfo.Terrain_YieldChanges() do
+    local yi = _yIdx[r.YieldType]
+    if yi then
+        _terrY[r.TerrainType] = _terrY[r.TerrainType] or {0, 0, 0}
+        _terrY[r.TerrainType][yi + 1] = r.YieldChange
+    end
+end
+for r in GameInfo.Feature_YieldChanges() do
+    local yi = _yIdx[r.YieldType]
+    if yi then
+        _featY[r.FeatureType] = _featY[r.FeatureType] or {0, 0, 0}
+        _featY[r.FeatureType][yi + 1] = r.YieldChange
+    end
+end
+local function knownYield(plot, k)
+    if _fogVis:IsVisible(plot:GetIndex()) then return plot:GetYield(k) end
+    local total = 0
+    local tr = GameInfo.Terrains[plot:GetTerrainType()]
+    if tr and _terrY[tr.TerrainType] then total = total + _terrY[tr.TerrainType][k + 1] end
+    local fi = plot:GetFeatureType()
+    if fi >= 0 then
+        local fr = GameInfo.Features[fi]
+        if fr and _featY[fr.FeatureType] then total = total + _featY[fr.FeatureType][k + 1] end
+    end
+    return total
+end
 """
     + _LUA_RES_VISIBLE
     + """
@@ -68,9 +99,9 @@ _SETTLE_SCORE_BODY = """
                             local tx, ty = cx + rx, cy + ry
                             local tPlot = Map.GetPlot(tx, ty)
                             if tPlot and Map.GetPlotDistance(cx, cy, tx, ty) <= 3 and vis:IsRevealed(tPlot:GetIndex()) then
-                                totalF = totalF + tPlot:GetYield(0)
-                                totalP = totalP + tPlot:GetYield(1)
-                                totalG = totalG + tPlot:GetYield(2)
+                                totalF = totalF + knownYield(tPlot, 0)
+                                totalP = totalP + knownYield(tPlot, 1)
+                                totalG = totalG + knownYield(tPlot, 2)
                                 local rIdx = tPlot:GetResourceType()
                                 if rIdx >= 0 then
                                     local resEntry = GameInfo.Resources[rIdx]
@@ -153,6 +184,7 @@ local me = Game.GetLocalPlayer()
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
 {_LUA_RES_VISIBLE}
+print("TURN|" .. Game.GetCurrentGameTurn())
 for dy = -r, r do
     for dx = -r, r do
         local x, y = cx + dx, cy + dy
@@ -937,7 +969,6 @@ def parse_map_response(lines: list[str]) -> list[TileInfo]:
                 improvement=imp_name,
                 owner_id=int(parts[8]) if visibility == "visible" else -1,
                 visibility=visibility,
-                visible=visibility == "visible",
                 is_fresh_water=is_fresh_water,
                 yields=yields,
                 units=unit_list,
@@ -1210,3 +1241,14 @@ def parse_revealed_tiles_seed(lines: list[str]) -> set[tuple[int, int]]:
             if len(xy) == 2:
                 tiles.add((int(xy[0]), int(xy[1])))
     return tiles
+
+
+def parse_turn_line(lines: list[str]) -> int | None:
+    """Extract the live game turn from a ``TURN|n`` line, if present."""
+    for line in lines:
+        if line.startswith("TURN|"):
+            try:
+                return _int(line.split("|")[1])
+            except (ValueError, IndexError):
+                return None
+    return None
