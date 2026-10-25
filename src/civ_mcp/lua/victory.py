@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import _LUA_VICTORY_ENABLED, SENTINEL, _int
+from civ_mcp.lua._helpers import _LUA_CIV_NAME, _LUA_VICTORY_ENABLED, SENTINEL, _int
 from civ_mcp.lua.models import (
     SpaceProject,
     VictoryPlayerProgress,
@@ -15,6 +15,7 @@ def build_victory_proximity_query() -> str:
     return (
         """
 local me = Game.GetLocalPlayer()
+__CIV_NAME__
 local pDiplo = Players[me]:GetDiplomacy()
 local relCount = {}
 local relOwner = {}
@@ -34,13 +35,8 @@ for i = 0, 62 do
                 if creator >= 0 and creator ~= me then
                     local rEntry = GameInfo.Religions[majRel]
                     local relName = rEntry and Locale.Lookup(rEntry.Name) or "Unknown"
-                    -- Fair play: only name the founder if met (Religion tab of World Rankings).
-                    if pDiplo:HasMet(creator) then
-                        local cfg = PlayerConfigurations[creator]
-                        relOwner[majRel] = Locale.Lookup(cfg:GetCivilizationShortDescription()) .. "|" .. relName
-                    else
-                        relOwner[majRel] = "an unmet civilization|" .. relName
-                    end
+                    -- Fair play: founder named only if met (civNameFor)
+                    relOwner[majRel] = civNameFor(creator) .. "|" .. relName
                 end
             end
         end
@@ -70,7 +66,7 @@ end
         + """
 print("{SENTINEL}")
 """
-    ).replace("{SENTINEL}", SENTINEL)
+    ).replace("__CIV_NAME__", _LUA_CIV_NAME).replace("{SENTINEL}", SENTINEL)
 
 
 def build_victory_progress_query() -> str:

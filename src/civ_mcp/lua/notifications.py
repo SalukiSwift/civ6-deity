@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL
+from civ_mcp.lua._helpers import _LUA_CIV_NAME, SENTINEL
 from civ_mcp.lua.models import GameNotification
 
 
@@ -55,6 +55,7 @@ def build_notifications_query() -> str:
     """Query NotificationManager for active notifications (InGame context)."""
     return """
 local me = Game.GetLocalPlayer()
+__CIV_NAME__
 local nm = NotificationManager
 local list = nm.GetList(me)
 local total = 0
@@ -75,7 +76,7 @@ if list then
                             if wPlot then
                                 local wOwner = wPlot:GetOwner()
                                 if wOwner and wOwner >= 0 and PlayerConfigurations[wOwner] then
-                                    local civShort = ((Players[wOwner] and Players[wOwner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(wOwner)) and "an unmet civilization" or Locale.Lookup(PlayerConfigurations[wOwner]:GetCivilizationShortDescription()))
+                                    local civShort = civNameFor(wOwner)
                                     if civShort then msg = msg .. " [" .. civShort .. "]" end
                                 end
                                 local dt = wPlot:GetDistrictType()
@@ -100,7 +101,7 @@ if list then
 end
 print("TOTAL|" .. total .. "|" .. emitted)
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("__CIV_NAME__", _LUA_CIV_NAME).replace("{SENTINEL}", SENTINEL)
 
 
 def parse_notifications_response(lines: list[str]) -> list[GameNotification]:

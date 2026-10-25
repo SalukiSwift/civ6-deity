@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from civ_mcp.lua._helpers import SENTINEL, _bail, _bail_lua, _int, _lua_get_unit
+from civ_mcp.lua._helpers import _LUA_CIV_NAME, SENTINEL, _bail, _bail_lua, _int, _lua_get_unit
 from civ_mcp.lua.models import GPAdvisorCity, GPAdvisorResult, GreatPersonInfo
 
 
@@ -10,6 +10,7 @@ def build_great_people_query() -> str:
     """Get available Great People and recruitment progress (InGame context)."""
     return f"""
 local me = Game.GetLocalPlayer()
+{_LUA_CIV_NAME}
 local gp = Game.GetGreatPeople()
 if gp == nil then {_bail("ERR:NO_GP_SYSTEM|Great People system not available")} end
 local timeline = gp:GetTimeline()
@@ -138,7 +139,7 @@ for _, entry in ipairs(timeline) do
         local claimant = "Unclaimed"
         if entry.Claimant and entry.Claimant >= 0 then
             local cfg = PlayerConfigurations[entry.Claimant]
-            if cfg then claimant = ((Players[entry.Claimant] and Players[entry.Claimant]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(entry.Claimant)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) end
+            if cfg then claimant = civNameFor(entry.Claimant) end
         end
         local myPoints = 0
         local threshold = entry.Cost or 0

@@ -209,7 +209,7 @@ class CloudSink:
         self._run_id: str = ""
         self._metadata: dict[str, Any] = {}
         self._civ: str | None = None
-        self._seed: int | None = None
+        self._seed: str | None = None
         self._lock = asyncio.Lock()
         self._buffer: dict[str, list[str]] = {}  # filename -> list of JSON lines
         self._flush_task: asyncio.Task[None] | None = None
@@ -257,6 +257,7 @@ class CloudSink:
         except Exception:
             existing = {"run_id": self._run_id, "metadata": self._metadata}
         existing["civ"] = civ
+        existing["seed"] = identity_hash(seed)  # hashed; convex_sync needs the key
         existing["game_id"] = f"{civ}_{identity_hash(seed)}"
         self._write_cloud_json(manifest_path, existing)
 

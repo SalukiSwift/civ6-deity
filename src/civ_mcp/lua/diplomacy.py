@@ -505,9 +505,10 @@ print("{SENTINEL}")
 def build_deal_options_query(other_player_id: int) -> str:
     """Show what both sides can trade — resources, gold, favor, agreements (InGame).
 
-    Fair play: their gold, gold per turn, favor, tradeable resources and city
-    list are exactly what the human deal screen shows; they must only be
-    surfaced as "(deal screen)" data inside a trade/deal flow.
+    Fair play: this mirrors the Make Deal screen, which a human can open with
+    any met civ at any time. Their gold, gold per turn, favor, tradeable
+    resources and city list are what that screen shows, so they are fair
+    whenever HasMet (enforced below); narration labels them "(deal screen)".
     """
     return f"""
 local me = Game.GetLocalPlayer()

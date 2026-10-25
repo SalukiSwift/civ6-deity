@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_CIV_NAME,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -276,7 +277,7 @@ pcall(function()
                 local civName = "player " .. owner
                 pcall(function()
                     local cfg = PlayerConfigurations[owner]
-                    civName = cfg and ((Players[owner] and Players[owner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(owner)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) or civName
+                    civName = cfg and civNameFor(owner) or civName
                 end)
                 local isMajor = true
                 pcall(function() isMajor = Players[owner]:IsMajor() end)
@@ -294,6 +295,7 @@ end)
 """
     return f"""
 local me = Game.GetLocalPlayer()
+{_LUA_CIV_NAME}
 local u = Players[me]:GetUnits():FindID({unit_index})
 if u then print("POS|" .. u:GetX() .. "|" .. u:GetY()) else print("POS|GONE") end
 {diag_block}print("{SENTINEL}")
@@ -303,8 +305,13 @@ if u then print("POS|" .. u:GetX() .. "|" .. u:GetY()) else print("POS|GONE") en
 def build_attack_unit(unit_index: int, target_x: int, target_y: int) -> str:
     return f"""
 {_lua_get_unit(unit_index)}
+{_LUA_CIV_NAME}
 local ux, uy = unit:GetX(), unit:GetY()
 local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
+-- Fair play: cannot target what we cannot see
+if not PlayersVisibility[me]:IsVisible({target_x}, {target_y}) then
+    {_bail(f"ERR:NOT_VISIBLE|({target_x},{target_y}) is not currently visible.")}
+end
 -- Find hostile unit on target tile (prefer military over civilian)
 local enemy = nil
 local enemyName = "unknown"
@@ -338,7 +345,7 @@ if enemyOwner ~= 63 then
     local pDiplo = Players[me]:GetDiplomacy()
     if not pDiplo:IsAtWarWith(enemyOwner) then
         local ownerCfg = PlayerConfigurations[enemyOwner]
-        local ownerName = ownerCfg and Locale.Lookup(ownerCfg:GetCivilizationDescription()) or ("player " .. enemyOwner)
+        local ownerName = civNameFor(enemyOwner)
         {_bail_lua('"ERR:NOT_AT_WAR|Cannot attack " .. enemyName .. " — you are at peace with " .. ownerName .. ". Declare war first or target a different unit."')}
     end
 end
@@ -512,6 +519,7 @@ def build_combat_estimate_query(unit_index: int, target_x: int, target_y: int) -
     """
     return f"""
 {_lua_get_unit(unit_index)}
+{_LUA_CIV_NAME}
 local ux, uy = unit:GetX(), unit:GetY()
 local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
 local unitInfo = GameInfo.Units[unit:GetType()]
@@ -545,7 +553,7 @@ if enemyOwner ~= 63 then
     local pDiplo = Players[me]:GetDiplomacy()
     if not pDiplo:IsAtWarWith(enemyOwner) then
         local ownerCfg = PlayerConfigurations[enemyOwner]
-        local ownerName = ownerCfg and Locale.Lookup(ownerCfg:GetCivilizationDescription()) or ("player " .. enemyOwner)
+        local ownerName = civNameFor(enemyOwner)
         local eInfo2 = GameInfo.Units[enemy:GetType()]
         local eName = eInfo2 and eInfo2.UnitType or "UNKNOWN"
         {_bail_lua('"ERR:NOT_AT_WAR|Cannot attack " .. eName .. " — you are at peace with " .. ownerName .. ". Declare war first."')}
@@ -762,6 +770,7 @@ def build_threat_scan_query() -> str:
     """
     return """
 local me = Game.GetLocalPlayer()
+__CIV_NAME__
 local pDiplo = Players[me]:GetDiplomacy()
 local pVis = PlayersVisibility[me]
 local myPos = {}
@@ -784,9 +793,8 @@ for pid = 0, 63 do
         local ownerName = "Barbarian"
         if pid ~= 63 then
             local cfg = PlayerConfigurations[pid]
-            if cfg then ownerName = Locale.Lookup(cfg:GetCivilizationShortDescription()) end
             -- Fair play: do not name civilizations we have not met
-            if isMajor and not pDiplo:HasMet(pid) then ownerName = "an unmet civilization" end
+            if cfg then ownerName = civNameFor(pid) end
         end
         for _, bu in Players[pid]:GetUnits():Members() do
             local bx, by = bu:GetX(), bu:GetY()
@@ -816,7 +824,7 @@ for pid = 0, 63 do
 end -- close for pid
 if not found then print("NO_THREATS") end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("__CIV_NAME__", _LUA_CIV_NAME).replace("{SENTINEL}", SENTINEL)
 
 
 def build_fortify_unit(unit_index: int) -> str:
@@ -1651,6 +1659,7 @@ def build_post_move_visibility_query(now_x: int, now_y: int, radius: int = 4) ->
     return f"""
 local cx, cy, r = {now_x}, {now_y}, {radius}
 local me = Game.GetLocalPlayer()
+{_LUA_CIV_NAME}
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
 {_LUA_RES_VISIBLE}
@@ -1684,7 +1693,7 @@ for dy = -r, r do
                 if ow >= 0 then
                     local ocfg, op = PlayerConfigurations[ow], Players[ow]
                     if ocfg and op and op:IsAlive() then
-                        ownerName = ((Players[ow] and Players[ow]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(ow)) and "an unmet civilization" or Locale.Lookup(ocfg:GetCivilizationShortDescription()))
+                        ownerName = civNameFor(ow)
                         if not op:IsMajor() then ownerName = ownerName .. ":CS" end
                     elseif ow == 63 then
                         ownerName = "Barbarian"
@@ -1713,7 +1722,7 @@ for dy = -r, r do
                                 local ownerLabel = "Barbarian"
                                 if pid ~= 63 then
                                     local cfg = PlayerConfigurations[pid]
-                                    if cfg then ownerLabel = ((Players[pid] and Players[pid]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(pid)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription())) end
+                                    if cfg then ownerLabel = civNameFor(pid) end
                                 end
                                 table.insert(uParts, ownerLabel .. " " .. nm:gsub("UNIT_", ""))
                             end

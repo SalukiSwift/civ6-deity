@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_CIV_NAME,
     SENTINEL,
     _LUA_XP_THRESHOLD,
     _bail,
@@ -411,6 +412,7 @@ def build_city_states_query() -> str:
     """List known city-states with envoy info (InGame context)."""
     return """
 local me = Game.GetLocalPlayer()
+__CIV_NAME__
 local pInfluence = Players[me]:GetInfluence()
 local pDiplo = Players[me]:GetDiplomacy()
 print("TOKENS|" .. pInfluence:GetTokensToGive())
@@ -437,14 +439,14 @@ for i = 0, 62 do
         local suzName = "None"
         if suzID >= 0 and suzID ~= 63 then
             local sCfg = PlayerConfigurations[suzID]
-            if sCfg then suzName = ((Players[suzID] and Players[suzID]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(suzID)) and "an unmet civilization" or Locale.Lookup(sCfg:GetCivilizationShortDescription())) end
+            if sCfg then suzName = civNameFor(suzID) end
         end
         local canSend = pInfluence:CanGiveTokensToPlayer(i) and "1" or "0"
         print("CS|" .. i .. "|" .. name:gsub("|","/") .. "|" .. csType .. "|" .. envoys .. "|" .. suzID .. "|" .. suzName:gsub("|","/") .. "|" .. canSend)
     end
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("__CIV_NAME__", _LUA_CIV_NAME).replace("{SENTINEL}", SENTINEL)
 
 
 def build_send_envoy(city_state_player_id: int) -> str:

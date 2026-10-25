@@ -184,3 +184,21 @@ for _, vt in ipairs(_vtypes) do
         if ok and en then print("VENABLED|" .. vt) end
     end
 end"""
+
+
+# Fair play: the single place that decides whether a civilization may be named.
+# Own player and met civs get their real name; everyone else (including unmet
+# city-states) is "an unmet civilization". HasMet(self) is unreliable, so the
+# local player is checked explicitly.
+_LUA_CIV_NAME = """\
+local function civNameFor(pid)
+    local meC = Game.GetLocalPlayer()
+    if pid == 63 then return "Barbarian" end
+    local cfgC = PlayerConfigurations[pid]
+    if not cfgC then return "an unmet civilization" end
+    if pid ~= meC and not Players[meC]:GetDiplomacy():HasMet(pid) then
+        return "an unmet civilization"
+    end
+    return Locale.Lookup(cfgC:GetCivilizationShortDescription())
+end
+"""

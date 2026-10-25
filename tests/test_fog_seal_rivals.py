@@ -134,7 +134,10 @@ def test_diary_full_query_is_local_player_only():
     lua = build_diary_full_query()
     assert "for _, pid in ipairs(PlayerManager.GetAliveMajorIDs())" not in lua
     assert "if i == me and Players[i]" in lua
-    assert "IsMajor() and Players[i]:IsAlive() then \"" not in lua.replace("\n", "")
+    # the aliveMajors pre-pass is also local-only (no other player's visibility)
+    assert "aliveMajors[#aliveMajors+1] = i" in lua
+    assert lua.index("if i == me and Players[i]") < lua.index("aliveMajors[#aliveMajors+1]")
+    assert "PCITY|" in lua and "if i == me and Players[i]" in lua.split("PCITY|")[0]
 
 
 def test_seed_never_in_agent_text():
@@ -166,3 +169,58 @@ def test_rivals_narration_title():
     src = inspect.getsource(narrate)
     assert "RIVALS (World Rankings)" in src
     assert "DEMOGRAPHICS" not in src and "RIVAL INTELLIGENCE" not in src
+
+
+def test_civ_name_helper_single_source_and_self_safe():
+    from civ_mcp.lua import _helpers
+    from civ_mcp.lua.economy import build_trade_routes_query
+    from civ_mcp.lua.map import build_map_area_query
+    from civ_mcp.lua.units import build_attack_unit
+
+    helper = _helpers._LUA_CIV_NAME
+    assert "pid ~= meC" in helper and "HasMet(pid)" in helper
+    assert "IsMajor" not in helper  # unmet city-states are unnamed too
+    builders = [
+        build_threat_scan_query(),
+        build_city_states_query(),
+        build_great_people_query(),
+        build_notifications_query(),
+        build_map_area_query(10, 10, 2),
+        build_trade_routes_query(),
+        build_trade_destinations_query(1),
+        build_victory_proximity_query(),
+        build_attack_unit(1, 5, 5),
+
+    ]
+    for lua in builders:
+        assert lua.count("local function civNameFor") == 1
+        assert "civNameFor(" in lua.replace("local function civNameFor(", "")
+        assert "__CIV_NAME__" not in lua and "{_LUA_CIV_NAME}" not in lua
+        # no inline copies of the gate remain
+        assert 'and "an unmet civilization" or' not in lua
+
+
+def test_attack_unit_requires_visible_target_and_masks_owner():
+    from civ_mcp.lua.units import build_attack_unit
+
+    lua = build_attack_unit(1, 5, 5)
+    assert "ERR:NOT_VISIBLE" in lua
+    assert lua.index("ERR:NOT_VISIBLE") < lua.index("GetUnitsAt")
+    assert "GetCivilizationDescription" not in lua
+    assert "civNameFor(enemyOwner)" in lua
+
+
+def test_owner_equal_to_local_player_is_never_unmet():
+    # Behavioural check of the helper's rule via a tiny Python mirror of its
+    # branch order: the self test must come before the HasMet test.
+    from civ_mcp.lua._helpers import _LUA_CIV_NAME
+
+    assert _LUA_CIV_NAME.index("pid ~= meC") < _LUA_CIV_NAME.index("HasMet(pid)")
+    assert _LUA_CIV_NAME.index("pid ~= meC and not") < _LUA_CIV_NAME.index('return "an unmet civilization"', _LUA_CIV_NAME.index("HasMet"))
+
+
+def test_cloud_manifest_keeps_hashed_seed():
+    import civ_mcp.telemetry as t
+
+    src = inspect.getsource(t.CloudSink.bind_game)
+    assert 'existing["seed"] = identity_hash(seed)' in src

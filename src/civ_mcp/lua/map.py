@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_CIV_NAME,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -181,6 +182,7 @@ def build_map_area_query(center_x: int, center_y: int, radius: int = 2) -> str:
     return f"""
 local cx, cy, r = {center_x}, {center_y}, {radius}
 local me = Game.GetLocalPlayer()
+{_LUA_CIV_NAME}
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
 {_LUA_RES_VISIBLE}
@@ -225,7 +227,7 @@ for dy = -r, r do
                         local cfg = PlayerConfigurations[owner]
                         local p = Players[owner]
                         if cfg and p and p:IsAlive() then
-                            ownerName = ((Players[owner] and Players[owner]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(owner)) and "an unmet civilization" or Locale.Lookup(cfg:GetCivilizationShortDescription()))
+                            ownerName = civNameFor(owner)
                             if not p:IsMajor() then ownerName = ownerName .. ":CS" end
                         elseif owner == 63 then
                             ownerName = "Barbarian"
@@ -251,7 +253,7 @@ for dy = -r, r do
                                         if i == 63 then label = "Barbarian"
                                         else
                                             local oCfg = PlayerConfigurations[i]
-                                            label = ((Players[i] and Players[i]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(i)) and "an unmet civilization" or Locale.Lookup(oCfg:GetCivilizationShortDescription()))
+                                            label = civNameFor(i)
                                         end
                                         table.insert(uParts, label .. " " .. ut:gsub("UNIT_", ""))
                                     end

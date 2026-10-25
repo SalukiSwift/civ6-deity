@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from civ_mcp.lua._helpers import (
+    _LUA_CIV_NAME,
     SENTINEL,
     _LUA_FMT_FLAT,
     _LUA_FMT_Y,
@@ -50,6 +51,9 @@ def build_trade_routes_query() -> str:
     return (
         """
 local me = Game.GetLocalPlayer()
+"""
+        + _LUA_CIV_NAME
+        + """
 local pTrade = Players[me]:GetTrade()
 local cap = pTrade:GetOutgoingRouteCapacity()
 local tm = Game.GetTradeManager()
@@ -102,7 +106,7 @@ for _, city in Players[me]:GetCities():Members() do
                 local ownerName = "Domestic"
                 if not isDom then
                     pcall(function()
-                        ownerName = ((Players[r.DestinationCityPlayer] and Players[r.DestinationCityPlayer]:IsMajor() and not Players[Game.GetLocalPlayer()]:GetDiplomacy():HasMet(r.DestinationCityPlayer)) and "an unmet civilization" or Locale.Lookup(PlayerConfigurations[r.DestinationCityPlayer]:GetCivilizationShortDescription()))
+                        ownerName = civNameFor(r.DestinationCityPlayer)
                     end)
                 end
                 -- City-state + quest
@@ -180,6 +184,7 @@ def build_trade_destinations_query(unit_index: int) -> str:
     """
     return f"""
 {_lua_get_unit(unit_index)}
+{_LUA_CIV_NAME}
 local opInfo = GameInfo.UnitOperations["UNITOPERATION_MAKE_TRADE_ROUTE"]
 if opInfo == nil then {_bail("ERR:NO_TRADE_OP|MAKE_TRADE_ROUTE operation not found")} end
 local opHash = opInfo.Hash
@@ -204,10 +209,7 @@ end
 local function enrichDest(i, city, cx, cy, isDom)
     local civ = "Domestic"
     if not isDom then
-        -- unmet majors are not named
-        local unmet = Players[i]:IsMajor() and not Players[me]:GetDiplomacy():HasMet(i)
-        if unmet then civ = "an unmet civilization"
-        else pcall(function() civ = Locale.Lookup(PlayerConfigurations[i]:GetCivilizationShortDescription()) end) end
+        pcall(function() civ = civNameFor(i) end)
     end
     local isCS = false
     pcall(function() isCS = Players[i]:GetInfluence():CanReceiveInfluence() end)
