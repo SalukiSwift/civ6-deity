@@ -27,7 +27,10 @@ import socket
 import subprocess
 import sys
 import time
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Awaitable, Callable, NamedTuple
+
+if TYPE_CHECKING:
+    from civ_mcp.connection import GameConnection
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +105,16 @@ _LAUNCH_TIMEOUT_SECONDS = 60
 _PORT_POLL_TIMEOUT = 180
 # Tuner TCP port
 _TUNER_PORT = 4318
+# The intro movies keep the main menu away for about 3 min 45 s after launch
+# on April's PC (rehearsal 2026-10-25), long after the tuner port opens. So
+# before any OCR navigation, wait (through the tuner) for the main menu's Lua
+# states, polling every few seconds within this budget.
+_MENU_WAIT_TIMEOUT = 360
+_MENU_WAIT_INTERVAL = 5
+# OCR wait for "Single Player": a backstop once the menu states are up.
+_SINGLE_PLAYER_OCR_TIMEOUT = 120
+# After CONTINUE the tuner port can take a while to accept connections again.
+_PORT_AFTER_LOAD_TIMEOUT = 60
 
 
 def _require_gui_deps() -> None:
@@ -2101,19 +2114,22 @@ def list_autosaves(limit: int = 10) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _navigate_to_save_sync(save_name: str, tab: str | None = "Autosaves") -> str:
+def _navigate_to_save_sync(
+    save_name: str, tab: str | None = "Autosaves", menu_note: str | None = None
+) -> str:
     """Navigate: Main Menu → Single Player → Load Game → [tab] → select → Load.
 
     Args:
         save_name: Display name of the save (no extension).
         tab: Filter checkbox to click (e.g. "Autosaves"), or None to use
             the default view (regular saves shown by default).
+        menu_note: How the main-menu wait went (first entry of the steps).
 
     Blocking operation — takes 30-90 seconds. Returns status message.
     """
     _require_gui_deps()  # Fail fast if deps missing
     nav_start = time.time()
-    steps = []
+    steps = [menu_note] if menu_note else []
 
     # Launch the game if it's not running
     if not is_game_running():
@@ -2128,8 +2144,14 @@ def _navigate_to_save_sync(save_name: str, tab: str | None = "Autosaves") -> str
         _click_aspyr_launcher_sync()
 
     log.info("[1/7] Waiting for main menu (Single Player)...")
-    if not _click_text("Single Player", timeout=90, exact=True, post_delay=0.5):
-        return "FAILED: Could not find 'Single Player' on main menu. Is the game at the main menu?"
+    if not _click_text(
+        "Single Player", timeout=_SINGLE_PLAYER_OCR_TIMEOUT, exact=True, post_delay=0.5
+    ):
+        done = f" Steps completed: {', '.join(steps)}" if steps else ""
+        return (
+            "FAILED: Could not find 'Single Player' on main menu. "
+            f"Is the game at the main menu?{done}"
+        )
     steps.append("Clicked Single Player")
 
     log.info("[2/7] Clicking 'Load Game'...")
@@ -2277,11 +2299,22 @@ def _navigate_to_save_sync(save_name: str, tab: str | None = "Autosaves") -> str
         time.sleep(3)
         steps.append("CONTINUE not found via OCR — used positional click fallback")
 
-    # Verify game loaded by checking FireTuner port
-    if _is_tuner_port_open():
-        steps.append("FireTuner port confirmed open")
+    # Verify the game loaded: the tuner port closes during the hand-off from
+    # the leader screen and reopens a little later, so poll for it.
+    port_start = time.time()
+    port_open = _is_tuner_port_open()
+    while not port_open and time.time() - port_start < _PORT_AFTER_LOAD_TIMEOUT:
+        time.sleep(3)
+        port_open = _is_tuner_port_open()
+    if port_open:
+        steps.append(
+            f"FireTuner port open ({time.time() - port_start:.0f}s after CONTINUE)"
+        )
     else:
-        steps.append("WARNING: FireTuner port not open after load")
+        steps.append(
+            f"WARNING: FireTuner port still closed {_PORT_AFTER_LOAD_TIMEOUT}s "
+            "after CONTINUE"
+        )
 
     nav_elapsed = time.time() - nav_start
     return f"Save loading ({nav_elapsed:.0f}s). Steps: {', '.join(steps)}. Wait ~10s then use get_game_overview to verify."
@@ -2302,17 +2335,85 @@ async def launch_game() -> str:
     return await asyncio.to_thread(_launch_game_sync)
 
 
-async def load_save_from_menu(save_name: str | None = None) -> str:
+MENU_STATES = ("FrontEnd", "MainMenu")
+
+
+async def wait_for_main_menu(
+    conn: "GameConnection | None" = None,
+    *,
+    timeout: float = _MENU_WAIT_TIMEOUT,
+    interval: float = _MENU_WAIT_INTERVAL,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> tuple[str, float]:
+    """Wait until a fresh tuner state list shows the main menu.
+
+    The tuner port opens long before the menu: during the intro movies the
+    state list holds only `Main State` and `DebugHotloadCache`. The main menu
+    is up once `FrontEnd` and `MainMenu` are both listed (as newgame.py
+    uses them). Reconnects every `interval` seconds within `timeout`.
+
+    Returns (status, seconds): status is "menu", "ingame" (a game is loaded,
+    so there is no menu to wait for) or "timeout". The connection is left
+    closed; the load that follows tears it down anyway.
+    """
+    from civ_mcp.connection import GameConnection, find_state
+
+    c = conn if conn is not None else GameConnection()
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    status = "timeout"
+    try:
+        while True:
+            try:
+                await c.reconnect()
+                states = c.lua_states
+                if all(find_state(states, n) is not None for n in MENU_STATES):
+                    status = "menu"
+                    break
+                if find_state(states, "InGame") is not None:
+                    status = "ingame"
+                    break
+            except Exception as e:  # noqa: BLE001 - the port is up and down here
+                log.debug("wait_for_main_menu: %s", e)
+            if loop.time() - t0 >= timeout:
+                break
+            await sleep(interval)
+    finally:
+        try:
+            await c.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    waited = round(loop.time() - t0, 1)
+    log.info("wait_for_main_menu: %s after %.1fs", status, waited)
+    return status, waited
+
+
+def _menu_note(status: str, waited: float) -> str:
+    if status == "menu":
+        return f"Main menu up after {waited:.0f}s (tuner)"
+    if status == "ingame":
+        return "A game is loaded (no main menu)"
+    return f"Main menu not seen through the tuner in {waited:.0f}s"
+
+
+async def load_save_from_menu(
+    save_name: str | None = None, conn: "GameConnection | None" = None
+) -> str:
     """Navigate the main menu to load a save via OCR.
 
     Args:
         save_name: Save name without extension (e.g. "AutoSave_0221" or
             "0A_GROUND_CONTROL"). If None, loads most recent autosave.
+        conn: The server's tuner connection, used to wait for the main menu
+            (a private one is opened when None). Callers should pause their
+            background pollers: the game serves one tuner client at a time.
 
     Checks both regular saves and autosaves directories. Uses the
     appropriate tab in the Load Game screen.
 
     Requires the game to be at the main menu (launched but no game loaded).
+    Launches it first if it is not running, then waits (up to 6 minutes)
+    for the main menu through the tuner before the OCR navigation starts.
     """
     if save_name is None:
         save_name = get_latest_autosave()
@@ -2339,14 +2440,26 @@ async def load_save_from_menu(save_name: str | None = None) -> str:
         avail_str = ", ".join(available + regular) if (available or regular) else "none"
         return f"Save '{save_name}' not found. Available: {avail_str}"
 
-    return await asyncio.to_thread(_navigate_to_save_sync, save_name, tab)
+    if not is_game_running():
+        launch_result = await launch_game()
+        log.info("load_save_from_menu: launch result: %s", launch_result)
+        if "not detected" in launch_result:
+            return f"FAILED: the game did not start ({launch_result})"
+    status, waited = await wait_for_main_menu(conn)
+    return await asyncio.to_thread(
+        _navigate_to_save_sync, save_name, tab, _menu_note(status, waited)
+    )
 
 
-async def restart_and_load(save_name: str | None = None) -> str:
+async def restart_and_load(
+    save_name: str | None = None, conn: "GameConnection | None" = None
+) -> str:
     """Kill game, relaunch, and load a save. Full recovery sequence.
 
-    This is the recommended tool for recovering from game hangs.
-    Takes 60-120 seconds total.
+    This is the recommended tool for recovering from game hangs. Takes
+    about 5 minutes on April's PC: the intro movies hold the main menu back
+    for 3 to 4 minutes after launch (see load_save_from_menu; `conn` is
+    passed on to it).
     """
     results = []
 
@@ -2368,8 +2481,8 @@ async def restart_and_load(save_name: str | None = None) -> str:
     # Dismiss any lingering crash dialog from previous session (both platforms)
     await dismiss_crash_dialogs()
 
-    # Step 3: Load save via OCR
-    load_result = await load_save_from_menu(save_name)
+    # Step 3: Wait for the main menu (tuner), then load the save via OCR
+    load_result = await load_save_from_menu(save_name, conn)
     results.append(f"Load: {load_result}")
 
     return " | ".join(results)

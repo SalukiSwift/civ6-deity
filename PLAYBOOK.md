@@ -22,7 +22,7 @@ You are Claude, playing Civilization VI on Deity through this repo's MCP tools, 
 4. `get_situation` for the board.
 5. The viewer is at `http://127.0.0.1:8000/` (port from `CIV_MCP_WEB_PORT`).
 6. The game must be launched with Steam's DX12 option (already set to always).
-7. After a crash or a closed game: `restart_and_load(reason, save_name="0_MCP_NNNN")` (or `restart_and_load(reason)` for the latest autosave), then say so in a `narrate` entry. Never load to undo something that went badly.
+7. After a crash or a closed game: `restart_and_load(reason, save_name="0_MCP_NNNN")` (or `restart_and_load(reason)` for the latest autosave), then say so in a `narrate` entry. It takes about 5 minutes (the intro movies hold the main menu back for 3 to 4 minutes); wait for it. Never load to undo something that went badly.
 8. No game exists yet (main menu): `new_game(leader, why)` creates the Deity Fractal Standard game from the main menu; if it cannot, it returns the settings for April to click.
 
 ## Turn loop
@@ -50,16 +50,17 @@ Other tools you will use: `get_map_area`, `get_units`, `get_cities`, `get_diplom
 
 Full upstream notes are in `docs/upstream-AGENTS.md` for reference. The rules that bite:
 
-1. Higher Y is south, X increases east.
+1. Higher Y is north (up the screen), X increases east. (Upstream's notes say the opposite; the screen settles it.)
 2. Unit ids are composite. Tools take `id % 65536`. Move responses show the target tile, not the arrival tile; check `get_units` for where the unit really is.
-3. `end_turn` takes one `summary`. It replaces upstream's five reflections.
-4. After you declare war, attacks fail (`NO_ENEMY`) until next turn. Do not retry and do not reload; end the turn and attack next turn.
-5. The World Congress fires inside `end_turn`. When one is due, call `get_world_congress`, then `queue_wc_votes`, BEFORE `end_turn`.
-6. `propose_trade` with mode `"test"` first, then `"send"`. If the AI changes the deal the response comes back as `COUNTER:`; read it before answering. Duplicate luxuries give 0 amenities, so trade them away.
-7. Buy religious units only in cities where your religion is the majority.
-8. Never delete Great People (0 charges is normal). Activate them on a matching completed district.
-9. Call `get_map_area` with radius 2 before moving civilians. Forest and hills movement costs stack.
-10. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
+3. A move longer than one turn keeps its path: the game moves the unit on along it when you END each turn, so at the start of the next turn it is still where it stopped, with full moves, shown as `[moving to (x,y)]` and left off the idle list. Leave it alone unless you want a new target; a new order or Skip Turn replaces the path.
+4. `end_turn` takes one `summary`. It replaces upstream's five reflections.
+5. After you declare war, attacks fail (`NO_ENEMY`) until next turn. Do not retry and do not reload; end the turn and attack next turn.
+6. The World Congress fires inside `end_turn`. When one is due, call `get_world_congress`, then `queue_wc_votes`, BEFORE `end_turn`.
+7. `propose_trade` with mode `"test"` first, then `"send"`. If the AI changes the deal the response comes back as `COUNTER:`; read it before answering. Duplicate luxuries give 0 amenities, so trade them away.
+8. Buy religious units only in cities where your religion is the majority.
+9. Never delete Great People (0 charges is normal). Activate them on a matching completed district.
+10. Call `get_map_area` with radius 2 before moving civilians. Forest and hills movement costs stack.
+11. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
 
 Also: `get_tech_civics` flags items 2 turns or fewer away as "!! GRAB THIS"; take those.
 

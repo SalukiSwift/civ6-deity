@@ -100,7 +100,7 @@ def test_every_action_tool_has_why_param():
 def test_event_text_block_and_fallback():
     report = "Turn 5 -> 6\nGold 10\n\n== Events ==\n  !!! Barbarians\n  -- Wonder built\n\n== Other ==\nx"
     assert Broadcast.event_text(report) == "!!! Barbarians | -- Wonder built"
-    assert Broadcast.event_text("a\nb") == "a | b"
+    assert Broadcast.event_text("a\nb") == "quiet turn"
 
 
 def test_narrate_logs_and_rejects_bad_kind(tmp_path):

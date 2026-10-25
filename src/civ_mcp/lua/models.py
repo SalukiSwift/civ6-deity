@@ -226,7 +226,10 @@ class UnitInfo:
     upgrade_cost: int = 0
     valid_improvements: list[str] = field(default_factory=list)
     religion: str = ""
-    is_busy: bool = False  # fortified, sleeping, sentried, healing or automated
+    is_busy: bool = False  # fortified, sleeping, alert, healing, skipping, moving or automated
+    # "awake", "fortified", "sleeping", "alert", "healing", "skipping", "busy",
+    # "automated", "moving:x,y" (queued multi-turn move), "?" (read failed)
+    activity: str = ""
 
 
 @dataclass
@@ -583,7 +586,7 @@ class FogBoundary:
     city_name: str
     city_x: int
     city_y: int
-    fog_distances: list[int]  # NE,E,SE,SW,W,NW — -1 means all explored
+    fog_distances: list[int]  # N,NE,SE,S,SW,NW (map.STRATEGIC_DIRECTIONS); -1 = all explored
 
 
 @dataclass

@@ -990,7 +990,9 @@ async def execute_end_turn(gs: GameState) -> str:
                             f"if not anyMoves then "
                             f"  local issued = 0; "
                             f"  for _, u in Players[me]:GetUnits():Members() do "
-                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.CanStartOperation(u, skipOp.Hash, nil, false) then UnitManager.RequestOperation(u, skipOp.Hash); issued = issued + 1 end "
+                            # Never skip a unit on a queued move: Skip Turn
+                            # cancels the path (checked live 2026-10-25).
+                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.GetQueuedDestination(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash, nil, false) then UnitManager.RequestOperation(u, skipOp.Hash); issued = issued + 1 end "
                             f'  end; print(issued > 0 and "AUTO_SKIPPED" or "NOTHING_TO_SKIP") '
                             f'else print("UNITS_NEED_ORDERS") end; '
                             f'print("{lq.SENTINEL}")'

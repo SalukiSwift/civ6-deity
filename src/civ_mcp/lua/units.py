@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from civ_mcp.lua._helpers import (
     _LUA_CIV_NAME,
     _LUA_RES_VISIBLE,
@@ -20,12 +22,15 @@ from civ_mcp.lua.models import (
     UnitInfo,
 )
 
+log = logging.getLogger(__name__)
+
 
 def build_units_query() -> str:
     """InGame context: lists all units with upgrade and builder improvement info."""
     return """
 local id = Game.GetLocalPlayer()
 local pVis = PlayersVisibility[id]
+local actErrShown = false
 for i, u in Players[id]:GetUnits():Members() do
     local x, y = u:GetX(), u:GetY()
     if x ~= -9999 then
@@ -181,14 +186,36 @@ for i, u in Players[id]:GetUnits():Members() do
             end
             if #meList > 0 then validImps = table.concat(meList, ";") end
         end
-        -- Busy = holding an order (fortify/sleep/sentry/heal/mission) or automated
-        local busy = "0"
-        pcall(function()
-            local act = u:GetActivityType()
-            if act ~= nil and act ~= ActivityTypes.ACTIVITY_AWAKE then busy = "1" end
-            if u.IsAutomated and u:IsAutomated() then busy = "1" end
+        -- Busy = holding an order (fortify/sleep/alert/heal/skip), automated or
+        -- on a queued multi-turn move. Read the way the game's own unit list
+        -- does (WorldTracker.lua, UnitPanel.lua): UnitManager.GetActivityType,
+        -- with fortified = not awake and GetFortifyTurns() > 0.
+        local busy, act = "0", "awake"
+        local okAct, errAct = pcall(function()
+            local a = UnitManager.GetActivityType(u)
+            if a == ActivityTypes.ACTIVITY_SLEEP then act = "sleeping"
+            elseif a == ActivityTypes.ACTIVITY_HOLD then act = "skipping"
+            elseif a == ActivityTypes.ACTIVITY_SENTRY then act = "alert"
+            elseif a == ActivityTypes.ACTIVITY_HEAL then act = "healing"
+            elseif a ~= nil and a ~= ActivityTypes.ACTIVITY_AWAKE then
+                if u:GetFortifyTurns() > 0 then act = "fortified" else act = "busy" end
+            end
+            local dest = UnitManager.GetQueuedDestination(u)
+            if dest and Map.IsPlot(dest) then
+                local dp = Map.GetPlotByIndex(dest)
+                act = "moving:" .. dp:GetX() .. "," .. dp:GetY()
+            end
+            if u.IsAutomated and u:IsAutomated() then act = "automated" end
+            if act ~= "awake" then busy = "1" end
         end)
-        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName .. "|" .. busy)
+        if not okAct then
+            act = "?"
+            if not actErrShown then
+                actErrShown = true
+                print("ACTERR|" .. tostring(errAct):gsub("|", "/"))
+            end
+        end
+        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName .. "|" .. busy .. "|" .. act)
     end
 end
 print("{SENTINEL}")
@@ -887,7 +914,8 @@ local healed = 0
 local healHash = GameInfo.UnitOperations["UNITOPERATION_HEAL"] and GameInfo.UnitOperations["UNITOPERATION_HEAL"].Hash
 for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
-    if x ~= -9999 and unit:GetMovesRemaining() > 0 then
+    -- Units on a queued multi-turn move keep it (it runs when the turn ends).
+    if x ~= -9999 and unit:GetMovesRemaining() > 0 and UnitManager.GetQueuedDestination(unit) == nil then
         local info = GameInfo.Units[unit:GetType()]
         local isCombat = info and info.Combat > 0
         if isCombat then
@@ -923,7 +951,9 @@ local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]
 if skipOp == nil then print("ERR:NO_SKIP_OPERATION"); print("{SENTINEL}"); return end
 for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
-    if x ~= -9999 and unit:GetMovesRemaining() > 0 then
+    -- Skip Turn cancels a queued multi-turn move (checked live), so leave
+    -- moving units alone: their path runs when the turn ends.
+    if x ~= -9999 and unit:GetMovesRemaining() > 0 and UnitManager.GetQueuedDestination(unit) == nil then
         if UnitManager.CanStartOperation(unit, skipOp.Hash, nil, false) then
             UnitManager.RequestOperation(unit, skipOp.Hash)
             count = count + 1
@@ -1395,9 +1425,19 @@ print("{SENTINEL}")
 """
 
 
+_activity_error_logged = False
+
+
 def parse_units_response(lines: list[str]) -> list[UnitInfo]:
+    global _activity_error_logged
     units = []
     for line in lines:
+        if line.startswith("ACTERR|"):
+            # The activity read failed in Lua: every unit would look idle.
+            if not _activity_error_logged:
+                _activity_error_logged = True
+                log.warning("units query: activity read failed: %s", line[7:])
+            continue
         parts = line.split("|")
         if len(parts) < 7:
             continue
@@ -1419,6 +1459,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
         )
         religion = parts[16] if len(parts) > 16 else ""
         is_busy = parts[17] == "1" if len(parts) > 17 else False
+        activity = parts[18] if len(parts) > 18 else ""
         units.append(
             UnitInfo(
                 unit_id=int(parts[0]),
@@ -1442,6 +1483,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 valid_improvements=valid_imps,
                 religion=religion,
                 is_busy=is_busy,
+                activity=activity,
             )
         )
     return units

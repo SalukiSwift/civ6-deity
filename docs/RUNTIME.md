@@ -103,6 +103,12 @@ taskkill.exe /IM CivilizationVI_DX12.exe /F
 
 Nothing needs saving for test runs.
 
+### Crash recovery (`restart_and_load`)
+
+`restart_and_load(reason)` kills the game, relaunches it, waits for the main menu through the tuner (a fresh state list with `FrontEnd` and `MainMenu`, polled every 5 s for up to 6 minutes, with the server's popup watcher, camera and watchdog paused so the game has one tuner client), then clicks through Single Player, Load Game, the save and CONTINUE GAME with OCR (120 s backstop for "Single Player"), and finally polls the port for up to 60 s. `load_save_from_menu` does the same wait (launching the game first if it is closed).
+
+Measured 2026-10-25 (game killed on turn 6, `restart_and_load(reason="fix verification")`): launch 23:51:17, process up +2 s, port open +18 s, main menu states after 187.9 s of waiting (about 3 min 26 s after launch), "Single Player" read by OCR 1.0 s later, CONTINUE GAME clicked 45 s after that, port open at once, tool returned after 263.5 s. Result: `Load: Save loading (49s). Steps: Main menu up after 188s (tuner), Clicked Single Player, Clicked Load Game, Clicked Autosaves filter, Selected save AutoSave_0006, Clicked Load Game button, Clicked CONTINUE, FireTuner port open (0s after CONTINUE).`
+
 ## Lua state lists (verbatim, index name)
 
 Indexes are **not stable**. The game pushes unsolicited `L` messages (tag -1) with the whole list whenever a state is created or destroyed, and it renumbers the list each time. Always resolve states by name after (re)connecting.

@@ -537,10 +537,10 @@ async def load_game_save(conn: GameConnection, save_name: str) -> str:
 
     if conn.gamecore_index is None:
         log.info("At main menu — loading '%s' via OCR menu nav", save_name)
-        return await game_launcher.load_save_from_menu(save_name)
+        return await game_launcher.load_save_from_menu(save_name, conn)
     else:
         log.info("In-game — restart_and_load for '%s'", save_name)
-        return await game_launcher.restart_and_load(save_name)
+        return await game_launcher.restart_and_load(save_name, conn)
 
 
 async def execute_lua(

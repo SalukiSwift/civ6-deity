@@ -576,7 +576,14 @@ print("{SENTINEL}")
 
 
 def parse_deal_options_response(lines: list[str]) -> DealOptions:
-    """Parse the deal options query response."""
+    """Parse the deal options query response.
+
+    Raises ValueError with the game's reason when the Lua bailed (for example
+    ERR:NOT_MET for a civ we have not met), so no default deal screen is shown.
+    """
+    for line in lines:
+        if line.startswith("ERR:"):
+            raise ValueError(line[4:])
     opts = DealOptions(other_player_id=0, other_civ_name="")
     for line in lines:
         if line.startswith("CIV|"):

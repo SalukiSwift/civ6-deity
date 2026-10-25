@@ -55,7 +55,9 @@ class Situation:
 
 
 def _unset(name: str) -> bool:
-    return not name or name.upper() == "NONE"
+    # The cities query reports an empty queue as "nothing"; research and
+    # civic reads use "" or "NONE".
+    return not name or name.strip().upper() in ("NONE", "NOTHING")
 
 
 def _ids(ids: list[int]) -> str:

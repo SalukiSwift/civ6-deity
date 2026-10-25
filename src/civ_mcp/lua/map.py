@@ -307,6 +307,23 @@ print("{SENTINEL}")
 """
 
 
+# Ray directions for the strategic map's fog boundaries: (label, dx, dy).
+# On screen higher Y is NORTH (up) and X increases east (checked live
+# 2026-10-25), so N is +Y. The rays are approximate on the hex grid.
+STRATEGIC_DIRECTIONS: tuple[tuple[str, int, int], ...] = (
+    ("N", 0, 1),
+    ("NE", 1, 1),
+    ("SE", 1, -1),
+    ("S", 0, -1),
+    ("SW", -1, -1),
+    ("NW", -1, 1),
+)
+
+
+def _lua_dir_vecs() -> str:
+    return "{" + ",".join(f"{{{dx},{dy}}}" for _, dx, dy in STRATEGIC_DIRECTIONS) + "}"
+
+
 def build_strategic_map_query() -> str:
     """GameCore context: fog boundary per city + unclaimed luxury/strategic resources."""
     return """
@@ -314,17 +331,12 @@ local me = Game.GetLocalPlayer()
 local vis = PlayersVisibility[me]
 local pTech = Players[me]:GetTechs()
 local w, h = Map.GetGridSize()
--- Hex direction offsets (NE, E, SE, SW, W, NW) for offset coords
-local dirs = {{0,-1},{1,0},{0,1},{-1,1},{-1,0},{0,-1}}
--- Actually use precise ray-cast: step along each cardinal hex direction
--- For offset coordinates, direction deltas depend on row parity
--- Simplified: use angular sectors by scanning radius rings
 for _, c in Players[me]:GetCities():Members() do
     local cx, cy = c:GetX(), c:GetY()
     local nm = Locale.Lookup(c:GetName())
-    -- For 6 directions, scan along a ray and find first unrevealed tile
-    -- Directions: N(0,-1), NE(+1,-1), SE(+1,+1), S(0,+1), SW(-1,+1), NW(-1,-1) approx
-    local dirVecs = {{0,-1},{1,-1},{1,1},{0,1},{-1,1},{-1,-1}}
+    -- For 6 directions, scan along a ray and find the first unrevealed tile.
+    -- Order and vectors: STRATEGIC_DIRECTIONS (higher Y is north).
+    local dirVecs = {DIR_VECS}
     local fogDists = {}
     for _, dv in ipairs(dirVecs) do
         local fogDist = -1
@@ -370,7 +382,7 @@ for y = 0, h - 1 do
     end
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{DIR_VECS}", _lua_dir_vecs())
 
 
 def parse_strategic_map_response(lines: list[str]) -> StrategicMapData:

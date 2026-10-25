@@ -573,9 +573,12 @@ async def _logged(
                     if turn_num
                     else get_latest_autosave()
                 )
-                restart_result = await game_launcher.restart_and_load(save)
-                log.info("CONNECTION RECOVERY: %s", restart_result)
                 gs = _get_game(ctx)
+                async with _background_paused(ctx):
+                    restart_result = await game_launcher.restart_and_load(
+                        save, gs.conn
+                    )
+                log.info("CONNECTION RECOVERY: %s", restart_result)
                 if _launcher_load_ok(restart_result):
                     gs.record_load(save or "latest autosave", "connection lost 5x")
                 for rc_attempt in range(30):
@@ -2277,7 +2280,10 @@ async def end_turn(ctx: Context, summary: str) -> str:
                     )
 
                     # Step 1: Kill + relaunch + OCR load
-                    restart_result = await game_launcher.restart_and_load(hang_save)
+                    async with _background_paused(ctx):
+                        restart_result = await game_launcher.restart_and_load(
+                            hang_save, gs.conn
+                        )
                     log.info("HANG RECOVERY: restart_and_load: %s", restart_result)
                     if _launcher_load_ok(restart_result):
                         gs.record_load(hang_save, "turn hang recovery")
@@ -3151,8 +3157,9 @@ async def load_save_from_menu(
         save_name: Autosave name (e.g. "AutoSave_0221"). If not provided,
                    loads the most recent autosave.
 
-    Requires the game to be running and at the main menu. Uses macOS Vision
-    OCR to find and click menu elements. Takes 30-90 seconds.
+    Launches the game if it is not running, waits (up to 6 minutes, through
+    the tuner) for the main menu, then clicks through the menus with OCR.
+    Takes about 1 minute from the main menu, about 5 from a cold start.
 
     After loading, wait ~10 seconds then call get_game_overview to verify.
 
@@ -3160,9 +3167,11 @@ async def load_save_from_menu(
     """
     if (err := _require_reason(reason)) is not None:
         return err
-    result = await game_launcher.load_save_from_menu(save_name)
+    gs = _get_game(ctx)
+    async with _background_paused(ctx):
+        result = await game_launcher.load_save_from_menu(save_name, gs.conn)
     if _launcher_load_ok(result):
-        _get_game(ctx).record_load(save_name or "latest autosave", reason)
+        gs.record_load(save_name or "latest autosave", reason)
     return result
 
 
@@ -3308,11 +3317,13 @@ async def restart_and_load(
                    loads the most recent autosave.
 
     This is the recommended tool for recovering from game hangs (e.g. AI turn
-    processing stuck in infinite loop). Takes 60-120 seconds total:
+    processing stuck in infinite loop). Takes about 5 minutes:
     1. Kills the game process
     2. Waits for Steam to deregister (~10s)
-    3. Relaunches via Steam (~15-30s for process start + main menu)
-    4. Navigates menus via OCR to load the save (~30-60s)
+    3. Relaunches via Steam (~20s until the tuner port opens)
+    4. Waits for the main menu through the tuner (the intro movies take
+       3 to 4 minutes; up to 6 minutes allowed)
+    5. Navigates menus via OCR to load the save (~50s)
 
     After completion, wait ~10 seconds then call get_game_overview to verify.
     """
@@ -3321,7 +3332,8 @@ async def restart_and_load(
     gs = _get_game(ctx)
     identity_before = gs._game_identity
 
-    result = await game_launcher.restart_and_load(save_name)
+    async with _background_paused(ctx):
+        result = await game_launcher.restart_and_load(save_name, gs.conn)
     if _launcher_load_ok(result):
         gs.record_load(save_name or "latest autosave", reason)
 
@@ -3346,7 +3358,8 @@ async def restart_and_load(
                     identity_before,
                     actual,
                 )
-                result2 = await game_launcher.restart_and_load(save_name)
+                async with _background_paused(ctx):
+                    result2 = await game_launcher.restart_and_load(save_name, conn)
                 if _launcher_load_ok(result2):
                     gs.record_load(
                         save_name or "latest autosave",

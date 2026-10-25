@@ -243,17 +243,23 @@ class Broadcast:
 
     @staticmethod
     def event_text(report: str) -> str:
-        """The `== Events ==` block of a turn report, else its first 15 lines."""
-        lines = report.splitlines()
-        if "== Events ==" in lines:
-            block = []
-            for line in lines[lines.index("== Events ==") + 1 :]:
+        """The `== Events ==` and `== Action Required ==` blocks of a turn report.
+
+        Never the appended `== Situation ==` board (that is in board.txt and
+        /api/board). A report with neither block logs "quiet turn".
+        """
+        lines = [ln.rstrip() for ln in report.splitlines()]
+        if "== Situation ==" in lines:
+            lines = lines[: lines.index("== Situation ==")]
+        block: list[str] = []
+        for header in ("== Events ==", "== Action Required =="):
+            if header not in lines:
+                continue
+            for line in lines[lines.index(header) + 1 :]:
                 if not line.strip() or line.startswith("=="):
                     break
                 block.append(line.strip())
-            if block:
-                return " | ".join(block)
-        return " | ".join(ln.strip() for ln in lines[:15] if ln.strip())
+        return " | ".join(block) if block else "quiet turn"
 
 
 NOTEBOOK_SECTIONS = ("Standing lessons", "Game log", "Current hypothesis")

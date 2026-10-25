@@ -28,8 +28,8 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 
 | Tool | Kind | What it exposes or changes | In-game screen or button | Guard |
 |---|---|---|---|---|
-| `get_game_overview` | R | Score, turn, yields, gold, research summary for our empire | Top bar and Info screens | none needed (own empire) |
-| `get_units` | R | Our units, plus enemy units on visible tiles that threaten them | Unit list, map view | IsVisible |
+| `get_game_overview` | R | Score, turn, yields, gold, research summary for our empire; share of land explored with our own revealed-tile count (the map's land total is not shown) | Top bar and Info screens | none needed (own empire) |
+| `get_units` | R | Our units with their order status (fortified, sleeping, moving to a tile), plus enemy units on visible tiles that threaten them | Unit list, map view | IsVisible |
 | `get_spies` | R | Our spies, ranks, missions | Espionage screen | none needed |
 | `spy_action` | M | Moves a spy or starts a mission | Espionage screen, spy panel | game rules (CanStartOperation) |
 | `get_cities` | R | Our cities and visible nearby targets | City panels, Cities report | IsVisible for foreign targets |
@@ -73,7 +73,7 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `city_action` | M | City commands, including keep/raze/liberate decisions | City panel, captured-city popup | game rules |
 | `unit_action` | M | Unit commands (move, attack, fortify, skip, found city...) | Unit panel and map clicks | IsVisible for targets, game rules |
 | `batch_orders` | M | Runs a list of the existing unit/city/research orders in sequence through the same player commands; no new capability | Unit panel, city panel and research screens, one after another | same as the single tools |
-| `skip_remaining_units` | M | Fortify or heal, then stock Skip Turn for the rest | Unit panel Skip Turn button | game rules |
+| `skip_remaining_units` | M | Fortify or heal, then stock Skip Turn for the rest; units on a queued move are left alone | Unit panel Skip Turn button | game rules |
 | `set_city_production` | M | Sets city production | City production panel | game rules |
 | `purchase_item` | M | Buys an item | City panel purchase buttons | game rules |
 | `set_research` | M | Chooses research or a civic; no GameCore fallback | Tech and Civics trees | game rules (error returned if refused) |

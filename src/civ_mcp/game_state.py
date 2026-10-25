@@ -287,9 +287,8 @@ class GameState:
                                 result += f"|BLOCKED ({reason})"
                             else:
                                 dx = now_x - from_x
-                                dy = (
-                                    now_y - from_y
-                                )  # positive dy = south (higher Y = south in Civ 6)
+                                # positive dy = north (higher Y is up on screen)
+                                dy = now_y - from_y
                                 result += f"|(moved dx:{dx:+d} dy:{dy:+d})"
                                 tgt_match = re.search(
                                     r"(?:MOVING_TO|CAPTURE_MOVE)\|(\d+),(\d+)", result
@@ -300,7 +299,10 @@ class GameState:
                                         int(tgt_match.group(2)),
                                     )
                                     if (now_x, now_y) != (tx, ty):
-                                        result += f"|STOPPED_MID_PATH (moves exhausted)"
+                                        result += (
+                                            "|STOPPED_MID_PATH (moves exhausted; the "
+                                            "rest of the path runs when the turn ends)"
+                                        )
                         break
             except Exception:
                 pass

@@ -50,10 +50,10 @@ def narrate_overview(ov: lq.GameOverview) -> str:
         ]
     )
     if ov.total_land > 0:
+        # The map's total land-tile count is not shown to a human player:
+        # print the share and our own revealed count only.
         pct = ov.explored_land * 100 // ov.total_land
-        lines.append(
-            f"Explored: {pct}% of land ({ov.explored_land}/{ov.total_land} tiles)"
-        )
+        lines.append(f"Explored: {pct}% of land ({ov.explored_land} land tiles revealed)")
     if ov.religions_max > 0:
         if ov.our_religion:
             lines.append(
@@ -152,6 +152,25 @@ def narrate_spies(spies: list[lq.SpyInfo]) -> str:
     return "\n".join(lines)
 
 
+_ACTIVITY_MARKERS = {
+    "fortified": "fortified",
+    "sleeping": "sleeping",
+    "alert": "alert",
+    "healing": "healing",
+    "skipping": "skipping turn",
+    "automated": "automated",
+    "busy": "busy",
+}
+
+
+def unit_activity_marker(activity: str) -> str:
+    """' [fortified]', ' [moving to (x,y)]' and so on; '' for an awake unit."""
+    if activity.startswith("moving:"):
+        return f" [moving to ({activity[len('moving:'):]})]"
+    label = _ACTIVITY_MARKERS.get(activity)
+    return f" [{label}]" if label else ""
+
+
 def narrate_units(
     units: list[lq.UnitInfo],
     threats: list[lq.ThreatInfo] | None = None,
@@ -190,6 +209,7 @@ def narrate_units(
         if u.religion:
             short = u.religion.replace("RELIGION_", "")
             religion_flag = f" [{short}]"
+        activity_flag = unit_activity_marker(u.activity)
         promo_flag = " **NEEDS PROMOTION**" if u.needs_promotion else ""
         upgrade_flag = ""
         if u.can_upgrade:
@@ -201,7 +221,7 @@ def narrate_units(
         )
         lines.append(
             f"  {u.name} ({u.unit_type}) at ({u.x},{u.y}) —{strength} "
-            f"moves {moves_disp}{charges}{religion_flag}{status}{route_flag}{promo_flag}{upgrade_flag} "
+            f"moves {moves_disp}{charges}{religion_flag}{activity_flag}{status}{route_flag}{promo_flag}{upgrade_flag} "
             f"[id:{u.unit_id}, idx:{u.unit_index}]"
         )
         if u.targets:
@@ -589,7 +609,9 @@ def narrate_map(tiles: list[lq.TileInfo], fog: "FogMemory | None" = None) -> str
 
 
 def narrate_strategic_map(data: lq.StrategicMapData) -> str:
-    dir_names = ["N", "NE", "SE", "S", "SW", "NW"]
+    from civ_mcp.lua.map import STRATEGIC_DIRECTIONS
+
+    dir_names = [label for label, _, _ in STRATEGIC_DIRECTIONS]
     lines = ["=== STRATEGIC MAP ===", ""]
 
     # Fog boundaries
