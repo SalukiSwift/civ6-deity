@@ -47,6 +47,8 @@ launcher-windows = [
     "winrt-Windows.Storage.Streams>=2.1",
     "winrt-Windows.Foundation>=2.1",
     "winrt-Windows.Foundation.Collections>=2.1",
+    "pywin32>=306",
+    "Pillow>=10",
 ]
 launcher-linux = [
     "mss>=9.0",

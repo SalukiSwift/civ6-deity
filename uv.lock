@@ -486,7 +486,7 @@ wheels = [
 
 [[package]]
 name = "civ6-mcp"
-version = "1.1.8"
+version = "1.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -523,6 +523,8 @@ launcher-macos = [
     { name = "pyobjc-framework-vision" },
 ]
 launcher-windows = [
+    { name = "pillow" },
+    { name = "pywin32" },
     { name = "winrt-windows-foundation" },
     { name = "winrt-windows-foundation-collections" },
     { name = "winrt-windows-graphics-imaging" },
@@ -571,10 +573,12 @@ requires-dist = [
     { name = "openai", marker = "extra == 'evals'", specifier = ">=1.0" },
     { name = "pandas", marker = "extra == 'analysis'", specifier = ">=2.3.3" },
     { name = "pillow", marker = "extra == 'launcher-linux'", specifier = ">=10.0" },
+    { name = "pillow", marker = "extra == 'launcher-windows'", specifier = ">=10" },
     { name = "pyarrow", marker = "extra == 'publish'", specifier = ">=18.0" },
     { name = "pyobjc-framework-quartz", marker = "extra == 'launcher-macos'", specifier = ">=11.0" },
     { name = "pyobjc-framework-vision", marker = "extra == 'launcher-macos'", specifier = ">=11.0" },
     { name = "pytesseract", marker = "extra == 'launcher-linux'", specifier = ">=0.3.10" },
+    { name = "pywin32", marker = "extra == 'launcher-windows'", specifier = ">=306" },
     { name = "winrt-windows-foundation", marker = "extra == 'launcher-windows'", specifier = ">=2.1" },
     { name = "winrt-windows-foundation-collections", marker = "extra == 'launcher-windows'", specifier = ">=2.1" },
     { name = "winrt-windows-graphics-imaging", marker = "extra == 'launcher-windows'", specifier = ">=2.1" },

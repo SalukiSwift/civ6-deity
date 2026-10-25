@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "civ6": {
-      "command": "uv",
-      "args": ["run", "--directory", ".", "civ-mcp"]
+      "command": "/mnt/c/Users/April Tomlinson/.local/bin/uv.exe",
+      "args": ["run", "--directory", "C:\\Users\\April Tomlinson\\civ6-deity", "civ-mcp"]
     }
   }
 }
