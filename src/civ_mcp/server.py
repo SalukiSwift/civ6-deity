@@ -1966,13 +1966,19 @@ async def batch_orders(ctx: Context, orders: list[dict], why: str = "") -> str:
     }
 
     async def _on_each(o, res):
-        if o.kind == "unit" and o.action in ("move", "attack"):
+        if (
+            o.kind == "unit"
+            and o.action in ("move", "attack")
+            and res.startswith("OK")
+        ):
             _get_camera(ctx).push(o.x, o.y, f"{o.action}\u2192({o.x},{o.y})")
         params: dict[str, Any] = {"why": o.why or why}
         if o.kind == "unit":
             params.update(unit_id=o.id, action=o.action)
             if o.item:
                 params["improvement"] = o.item
+        elif o.id is not None:
+            params["item_name"] = f"city#{o.id} {o.item}"
         else:
             params["item_name"] = o.item
         if o.x is not None and o.y is not None:

@@ -157,6 +157,8 @@ def _parse_one(d: dict, index: int) -> Order:
         return Order("unit", uid, action, x, y, item or None, why, index)
     if "city_id" in d:
         cid = _opt_int(d, "city_id")
+        if cid is None:
+            raise ValueError("city order needs city_id")
         for key in ("production", "purchase"):
             if d.get(key):
                 item = str(d[key])
@@ -211,6 +213,8 @@ async def run_orders(
             res = f"FAIL {text}" if text.startswith("Error") else f"OK {text}"
         except (LuaError, ValueError) as e:
             res = f"FAIL {e}"
+        except Exception as e:  # one bad order must not lose the rest
+            res = f"FAIL {type(e).__name__}: {e}"
         results.append((o, res))
         try:
             await on_each(o, res)
