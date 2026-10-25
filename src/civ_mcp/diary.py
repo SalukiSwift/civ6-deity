@@ -9,7 +9,14 @@ import json
 from pathlib import Path
 
 DIARY_DIR = Path.home() / ".civ6-mcp"
-_REFLECTION_FIELDS = ("tactical", "strategic", "tooling", "planning", "hypothesis")
+_REFLECTION_FIELDS = (
+    "summary",
+    "tactical",
+    "strategic",
+    "tooling",
+    "planning",
+    "hypothesis",
+)
 
 
 def diary_path(civ: str, seed: int, run_id: str) -> Path:

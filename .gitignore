@@ -45,3 +45,8 @@ scripts/mission_control.sh
 docs/agent-essays/
 mission-control/
 docs/analysis/
+
+# Broadcast campaign data
+campaign/games/
+campaign/lobby.md
+campaign/lobby.jsonl

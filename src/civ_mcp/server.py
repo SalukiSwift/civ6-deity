@@ -5,6 +5,7 @@ to the running game via FireTuner protocol.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -14,12 +15,14 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
+from civ_mcp.broadcast import ACTION_TOOLS, KINDS, Broadcast
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
@@ -56,6 +59,7 @@ class AppContext:
     spatial: SpatialTracker
     map_capture: MapCapture
     watchdog: GameOverWatchdog
+    broadcast: Broadcast
 
 
 async def _auto_boot(conn: GameConnection, save_name: str) -> None:
@@ -346,6 +350,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             spatial=spatial,
             map_capture=map_capture,
             watchdog=watchdog,
+            broadcast=Broadcast(Path(__file__).parents[2] / "campaign"),
         )
     finally:
         await emitter.close()
@@ -386,6 +391,26 @@ def _get_map_capture(ctx: Context) -> MapCapture:
 
 def _get_watchdog(ctx: Context) -> GameOverWatchdog:
     return ctx.request_context.lifespan_context.watchdog
+
+
+def _get_broadcast(ctx: Context) -> Broadcast:
+    return ctx.request_context.lifespan_context.broadcast
+
+
+async def _bind_broadcast(ctx: Context) -> Broadcast:
+    """Return the broadcast log, binding it to the live game if not yet bound."""
+    bc = _get_broadcast(ctx)
+    if bc.game_dir is None:
+        try:
+            civ, seed = await _get_game(ctx).get_game_identity()
+            bc.bind_game(hashlib.sha1(str(seed).encode()).hexdigest()[:10], civ)
+        except Exception:  # menu, lobby, or no connection: stay unbound
+            log.debug("Broadcast bind skipped", exc_info=True)
+    return bc
+
+
+# Sub-tools that _logged under a different name than the tool the agent called.
+_ACTION_ALIASES = {"city_attack": "city_action", "resolve_city_capture": "city_action"}
 
 
 def _param_summary(params: dict[str, Any]) -> str:
@@ -495,6 +520,17 @@ async def _logged(
         _result_summary(result),
     )
     await logger.log_tool_call(tool_name, params, result, ms)
+    action_name = _ACTION_ALIASES.get(tool_name, tool_name)
+    if action_name in ACTION_TOOLS:
+        try:
+            bc = await _bind_broadcast(ctx)
+            bc.append(
+                "action",
+                Broadcast.action_text(action_name, params, result),
+                turn=_get_game(ctx)._high_water_turn or None,
+            )
+        except Exception:
+            log.debug("Broadcast action log failed", exc_info=True)
     try:
         await _get_spatial(ctx).record(tool_name, params, result, ms, tiles=tiles)
     except Exception:
@@ -628,6 +664,7 @@ async def spy_action(
     action: str,
     target_x: int,
     target_y: int,
+    why: str = "",
 ) -> str:
     """Send a spy to a city or launch a spy mission.
 
@@ -650,6 +687,8 @@ async def spy_action(
         - Use 'travel' first, then end the turn, then launch the mission.
         - COUNTERSPY defends your own city (spy must be in your city).
         - get_spies shows which ops are available at the spy's current location.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     unit_index = unit_id % 65536
@@ -658,6 +697,7 @@ async def spy_action(
         "action": action,
         "target_x": target_x,
         "target_y": target_y,
+        "why": why,
     }
 
     async def _run():
@@ -981,25 +1021,29 @@ async def get_governors(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def appoint_governor(ctx: Context, governor_type: str) -> str:
+async def appoint_governor(ctx: Context, governor_type: str, why: str = "") -> str:
     """Appoint a new governor.
 
     Args:
         governor_type: e.g. GOVERNOR_THE_EDUCATOR (Pingala), GOVERNOR_THE_DEFENDER (Victor)
 
     Requires available governor points. Use get_governors to see options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "appoint_governor",
-        {"governor_type": governor_type},
+        {"why": why, "governor_type": governor_type},
         lambda: gs.appoint_governor(governor_type),
     )
 
 
 @mcp.tool()
-async def assign_governor(ctx: Context, governor_type: str, city_id: int) -> str:
+async def assign_governor(
+    ctx: Context, governor_type: str, city_id: int, why: str = ""
+) -> str:
     """Assign an appointed governor to a city.
 
     Args:
@@ -1007,19 +1051,24 @@ async def assign_governor(ctx: Context, governor_type: str, city_id: int) -> str
         city_id: The city ID (from get_cities output)
 
     Governor must already be appointed. Takes several turns to establish.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "assign_governor",
-        {"governor_type": governor_type, "city_id": city_id},
+        {"why": why, "governor_type": governor_type, "city_id": city_id},
         lambda: gs.assign_governor(governor_type, city_id),
     )
 
 
 @mcp.tool()
 async def promote_governor(
-    ctx: Context, governor_type: str, promotion_type: str
+    ctx: Context,
+    governor_type: str,
+    promotion_type: str,
+    why: str = "",
 ) -> str:
     """Promote a governor with a new ability.
 
@@ -1028,12 +1077,14 @@ async def promote_governor(
         promotion_type: The promotion type (from get_governors output, shown under each governor)
 
     Requires available governor points. Use get_governors to see available promotions.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "promote_governor",
-        {"governor_type": governor_type, "promotion_type": promotion_type},
+        {"why": why, "governor_type": governor_type, "promotion_type": promotion_type},
         lambda: gs.promote_governor(governor_type, promotion_type),
     )
 
@@ -1058,7 +1109,9 @@ async def get_unit_promotions(ctx: Context, unit_id: int) -> str:
 
 
 @mcp.tool()
-async def promote_unit(ctx: Context, unit_id: int, promotion_type: str) -> str:
+async def promote_unit(
+    ctx: Context, unit_id: int, promotion_type: str, why: str = ""
+) -> str:
     """Apply a promotion to a unit.
 
     Args:
@@ -1066,12 +1119,14 @@ async def promote_unit(ctx: Context, unit_id: int, promotion_type: str) -> str:
         promotion_type: e.g. PROMOTION_BATTLECRY, PROMOTION_TORTOISE
 
     Use get_unit_promotions first to see available options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "promote_unit",
-        {"unit_id": unit_id, "promotion_type": promotion_type},
+        {"why": why, "unit_id": unit_id, "promotion_type": promotion_type},
         lambda: gs.promote_unit(unit_id, promotion_type),
     )
 
@@ -1094,17 +1149,22 @@ async def get_city_states(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def send_envoy(ctx: Context, player_id: int) -> str:
+async def send_envoy(ctx: Context, player_id: int, why: str = "") -> str:
     """Send an envoy to a city-state.
 
     Args:
         player_id: The city-state's player ID (from get_city_states)
 
     Requires available envoy tokens. Use get_city_states to see options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
-        ctx, "send_envoy", {"player_id": player_id}, lambda: gs.send_envoy(player_id)
+        ctx,
+        "send_envoy",
+        {"why": why, "player_id": player_id},
+        lambda: gs.send_envoy(player_id),
     )
 
 
@@ -1125,7 +1185,7 @@ async def get_pantheon_beliefs(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def choose_pantheon(ctx: Context, belief_type: str) -> str:
+async def choose_pantheon(ctx: Context, belief_type: str, why: str = "") -> str:
     """Found a pantheon with the specified belief.
 
     Args:
@@ -1133,12 +1193,14 @@ async def choose_pantheon(ctx: Context, belief_type: str) -> str:
 
     Use get_pantheon_beliefs first to see options. Requires enough faith
     and no existing pantheon.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "choose_pantheon",
-        {"belief_type": belief_type},
+        {"why": why, "belief_type": belief_type},
         lambda: gs.choose_pantheon(belief_type),
     )
 
@@ -1162,7 +1224,11 @@ async def get_religion_beliefs(ctx: Context) -> str:
 
 @mcp.tool()
 async def found_religion(
-    ctx: Context, religion_type: str, follower_belief: str, founder_belief: str
+    ctx: Context,
+    religion_type: str,
+    follower_belief: str,
+    founder_belief: str,
+    why: str = "",
 ) -> str:
     """Found a religion with a chosen name, follower belief, and founder belief.
 
@@ -1174,12 +1240,15 @@ async def found_religion(
     Requires your Great Prophet to have already activated on a Holy Site
     (via UNITOPERATION_FOUND_RELIGION). Use get_religion_beliefs
     first to see available options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "found_religion",
         {
+            "why": why,
             "religion_type": religion_type,
             "follower_belief": follower_belief,
             "founder_belief": founder_belief,
@@ -1189,7 +1258,7 @@ async def found_religion(
 
 
 @mcp.tool()
-async def upgrade_unit(ctx: Context, unit_id: int) -> str:
+async def upgrade_unit(ctx: Context, unit_id: int, why: str = "") -> str:
     """Upgrade a unit to its next type (e.g. Slinger -> Archer).
 
     Args:
@@ -1197,10 +1266,15 @@ async def upgrade_unit(ctx: Context, unit_id: int) -> str:
 
     Requires the right technology, enough gold, and the unit must have
     moves remaining. The unit's movement is consumed by upgrading.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
-        ctx, "upgrade_unit", {"unit_id": unit_id}, lambda: gs.upgrade_unit(unit_id)
+        ctx,
+        "upgrade_unit",
+        {"why": why, "unit_id": unit_id},
+        lambda: gs.upgrade_unit(unit_id),
     )
 
 
@@ -1222,19 +1296,21 @@ async def get_dedications(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def choose_dedication(ctx: Context, dedication_index: int) -> str:
+async def choose_dedication(ctx: Context, dedication_index: int, why: str = "") -> str:
     """Choose a dedication/commemoration for the current era.
 
     Args:
         dedication_index: The index of the dedication (from get_dedications output)
 
     Use get_dedications first to see available options and their bonuses.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "choose_dedication",
-        {"dedication_index": dedication_index},
+        {"why": why, "dedication_index": dedication_index},
         lambda: gs.choose_dedication(dedication_index),
     )
 
@@ -1262,7 +1338,9 @@ async def get_trade_options(ctx: Context, other_player_id: int) -> str:
 
 
 @mcp.tool()
-async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> str:
+async def respond_to_trade(
+    ctx: Context, other_player_id: int, accept: bool, why: str = ""
+) -> str:
     """Accept or reject a pending trade deal.
 
     Args:
@@ -1270,12 +1348,14 @@ async def respond_to_trade(ctx: Context, other_player_id: int, accept: bool) -> 
         accept: True to accept the deal, False to reject it
 
     Use get_pending_trades first to see what's being offered.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "respond_to_trade",
-        {"other_player_id": other_player_id, "accept": accept},
+        {"why": why, "other_player_id": other_player_id, "accept": accept},
         lambda: gs.respond_to_deal(other_player_id, accept),
     )
 
@@ -1296,6 +1376,7 @@ async def propose_trade(
     request_open_borders: bool = False,
     joint_war_target: int = 0,
     mode: str = "send",
+    why: str = "",
 ) -> str:
     """Propose a trade deal to another civilization.
 
@@ -1317,6 +1398,8 @@ async def propose_trade(
     Examples: Gift 100 gold: offer_gold=100. Trade silk for 3 gpt: offer_resources="RESOURCE_SILK", request_gold_per_turn=3.
     Mutual open borders: offer_open_borders=True, request_open_borders=True.
     Test a deal first: mode="test" to see what the AI thinks is fair, then mode="send" to commit.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
 
@@ -1374,6 +1457,7 @@ async def propose_trade(
         ctx,
         "propose_trade",
         {
+            "why": why,
             "other_player_id": other_player_id,
             "offer_items": offer_items,
             "request_items": request_items,
@@ -1383,7 +1467,7 @@ async def propose_trade(
 
 
 @mcp.tool()
-async def propose_peace(ctx: Context, other_player_id: int) -> str:
+async def propose_peace(ctx: Context, other_player_id: int, why: str = "") -> str:
     """Propose white peace to a civilization you're at war with.
 
     Args:
@@ -1391,18 +1475,20 @@ async def propose_peace(ctx: Context, other_player_id: int) -> str:
 
     Requires being at war and past the 10-turn war cooldown.
     The AI may accept or reject based on war score and relationship.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "propose_peace",
-        {"other_player_id": other_player_id},
+        {"why": why, "other_player_id": other_player_id},
         lambda: gs.propose_peace(other_player_id),
     )
 
 
 @mcp.tool()
-async def set_policies(ctx: Context, assignments: str) -> str:
+async def set_policies(ctx: Context, assignments: str, why: str = "") -> str:
     """Set policy cards in government slots.
 
     Args:
@@ -1414,6 +1500,8 @@ async def set_policies(ctx: Context, assignments: str) -> str:
 
     Wildcard slots can accept any policy type. Military slots accept
     military policies, economic slots accept economic policies, etc.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
 
@@ -1429,12 +1517,17 @@ async def set_policies(ctx: Context, assignments: str) -> str:
             return "Error: no valid assignments. Format: '0=POLICY_AGOGE,1=POLICY_URBAN_PLANNING'"
         return await gs.set_policies(parsed)
 
-    return await _logged(ctx, "set_policies", {"assignments": assignments}, _run)
+    return await _logged(
+        ctx, "set_policies", {"why": why, "assignments": assignments}, _run
+    )
 
 
 @mcp.tool()
 async def respond_to_diplomacy(
-    ctx: Context, other_player_id: int, response: str
+    ctx: Context,
+    other_player_id: int,
+    response: str,
+    why: str = "",
 ) -> str:
     """Respond to a pending diplomacy encounter.
 
@@ -1445,19 +1538,24 @@ async def respond_to_diplomacy(
     First meetings typically have 2-3 rounds. The tool automatically detects
     and closes goodbye-phase sessions (where dialogue text stops changing).
     If SESSION_CONTINUES is returned, send another response for the next round.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "respond_to_diplomacy",
-        {"other_player_id": other_player_id, "response": response},
+        {"why": why, "other_player_id": other_player_id, "response": response},
         lambda: gs.diplomacy_respond(other_player_id, response),
     )
 
 
 @mcp.tool()
 async def send_diplomatic_action(
-    ctx: Context, other_player_id: int, action: str
+    ctx: Context,
+    other_player_id: int,
+    action: str,
+    why: str = "",
 ) -> str:
     """Send a proactive diplomatic action to another civilization.
 
@@ -1474,19 +1572,24 @@ async def send_diplomatic_action(
     Embassies require Writing tech. Use get_diplomacy to see available actions.
     Surprise war is always available if not allied/friends. Other war types
     (casus belli) require specific civics and conditions.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "send_diplomatic_action",
-        {"other_player_id": other_player_id, "action": action},
+        {"why": why, "other_player_id": other_player_id, "action": action},
         lambda: gs.send_diplomatic_action(other_player_id, action),
     )
 
 
 @mcp.tool()
 async def form_alliance(
-    ctx: Context, other_player_id: int, alliance_type: str = "MILITARY"
+    ctx: Context,
+    other_player_id: int,
+    alliance_type: str = "MILITARY",
+    why: str = "",
 ) -> str:
     """Form an alliance with another civilization.
 
@@ -1496,12 +1599,18 @@ async def form_alliance(
 
     Requires declared friendship and Diplomatic Service civic.
     Use get_trade_options to check alliance eligibility first.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "form_alliance",
-        {"other_player_id": other_player_id, "alliance_type": alliance_type},
+        {
+            "why": why,
+            "other_player_id": other_player_id,
+            "alliance_type": alliance_type,
+        },
         lambda: gs.form_alliance(other_player_id, alliance_type.upper()),
     )
 
@@ -1513,6 +1622,7 @@ async def city_action(
     action: str,
     target_x: Optional[int] = None,
     target_y: Optional[int] = None,
+    why: str = "",
 ) -> str:
     """Issue a command to a city.
 
@@ -1531,6 +1641,8 @@ async def city_action(
     - 'raze': Raze a captured city (military conquest only)
     - 'liberate_founder': Liberate to original founder
     - 'liberate_previous': Liberate to previous owner
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     match action:
@@ -1540,7 +1652,13 @@ async def city_action(
             result = await _logged(
                 ctx,
                 "city_attack",
-                {"city_id": city_id, "x": target_x, "y": target_y},
+                {
+                    "city_id": city_id,
+                    "x": target_x,
+                    "y": target_y,
+                    "action": "attack",
+                    "why": why,
+                },
                 lambda: gs.city_attack(city_id, target_x, target_y),
             )
             _get_camera(ctx).push(target_x, target_y, "city attack")
@@ -1549,7 +1667,7 @@ async def city_action(
             return await _logged(
                 ctx,
                 "resolve_city_capture",
-                {"action": action},
+                {"action": action, "why": why},
                 lambda: gs.resolve_city_capture(action),
             )
         case _:
@@ -1564,6 +1682,7 @@ async def unit_action(
     target_x: Optional[int] = None,
     target_y: Optional[int] = None,
     improvement: Optional[str] = None,
+    why: str = "",
 ) -> str:
     """Issue a command to a unit.
 
@@ -1591,10 +1710,12 @@ async def unit_action(
     heal = fortify until healed (auto-wake at full HP).
     alert = sleep but auto-wake when enemy enters sight range.
     delete = permanently disband the unit.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     unit_index = unit_id % 65536
-    params: dict[str, Any] = {"unit_id": unit_id, "action": action}
+    params: dict[str, Any] = {"unit_id": unit_id, "action": action, "why": why}
     if target_x is not None:
         params["target_x"] = target_x
     if target_y is not None:
@@ -1668,15 +1789,17 @@ async def unit_action(
 
 
 @mcp.tool()
-async def skip_remaining_units(ctx: Context) -> str:
+async def skip_remaining_units(ctx: Context, why: str = "") -> str:
     """Skip all units that still have moves remaining.
 
     Useful after diplomacy encounters invalidate all standing orders.
     Uses GameCore FinishMoves on each unit — fast, reliable, no async issues.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
-        ctx, "skip_remaining_units", {}, lambda: gs.skip_remaining_units()
+        ctx, "skip_remaining_units", {"why": why}, lambda: gs.skip_remaining_units()
     )
 
 
@@ -1688,6 +1811,7 @@ async def set_city_production(
     item_name: str,
     target_x: int | None = None,
     target_y: int | None = None,
+    why: str = "",
 ) -> str:
     """Set what a city should produce.
 
@@ -1699,9 +1823,16 @@ async def set_city_production(
         target_y: Y coordinate for district/wonder placement
 
     Tip: call get_cities first to see your cities and their IDs.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
-    params: dict = {"city_id": city_id, "item_type": item_type, "item_name": item_name}
+    params: dict = {
+        "city_id": city_id,
+        "item_type": item_type,
+        "item_name": item_name,
+        "why": why,
+    }
     if target_x is not None:
         params["target_x"] = target_x
         params["target_y"] = target_y
@@ -1722,6 +1853,7 @@ async def purchase_item(
     item_type: str,
     item_name: str,
     yield_type: str = "YIELD_GOLD",
+    why: str = "",
 ) -> str:
     """Purchase a unit or building instantly with gold or faith.
 
@@ -1732,12 +1864,15 @@ async def purchase_item(
         yield_type: YIELD_GOLD (default) or YIELD_FAITH
 
     Costs gold/faith immediately. Use get_city_production to see what's available.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "purchase_item",
         {
+            "why": why,
             "city_id": city_id,
             "item_type": item_type,
             "item_name": item_name,
@@ -1748,7 +1883,9 @@ async def purchase_item(
 
 
 @mcp.tool()
-async def set_research(ctx: Context, tech_or_civic: str, category: str = "tech") -> str:
+async def set_research(
+    ctx: Context, tech_or_civic: str, category: str = "tech", why: str = ""
+) -> str:
     """Choose a technology or civic to research.
 
     Args:
@@ -1756,6 +1893,8 @@ async def set_research(ctx: Context, tech_or_civic: str, category: str = "tech")
         category: "tech" or "civic" (default: tech)
 
     Tip: call get_tech_civics first to see available options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
 
@@ -1767,55 +1906,56 @@ async def set_research(ctx: Context, tech_or_civic: str, category: str = "tech")
     return await _logged(
         ctx,
         "set_research",
-        {"tech_or_civic": tech_or_civic, "category": category},
+        {"why": why, "tech_or_civic": tech_or_civic, "category": category},
         _run,
     )
 
 
+@mcp.tool()
+async def narrate(ctx: Context, kind: str, text: str) -> str:
+    """Write a line of commentary to the live broadcast log.
+
+    Use it to think out loud for viewers: plans, reads of the situation,
+    decisions, reactions, lessons, pivots and postmortems.
+
+    Args:
+        kind: One of plan, read, decision, reaction, lesson, pivot, postmortem
+              (also accepted: turn, event, action, load, game)
+        text: What to say, one to three sentences.
+    """
+    if kind not in KINDS:
+        return f"Error: unknown kind '{kind}'. Use one of: {', '.join(KINDS)}"
+    if not text.strip():
+        return "Error: text required"
+    bc = await _bind_broadcast(ctx)
+    bc.append(kind, text.strip(), turn=_get_game(ctx)._high_water_turn or None)
+    return "logged"
+
+
 @mcp.tool(annotations={"destructiveHint": True})
-async def end_turn(
-    ctx: Context,
-    tactical: str = "",
-    strategic: str = "",
-    tooling: str = "",
-    planning: str = "",
-    hypothesis: str = "",
-) -> str:
+async def end_turn(ctx: Context, summary: str) -> str:
     """End the current turn.
 
     Make sure you've moved all units, set production, and chosen research
     before ending the turn.
 
-    All 5 reflection parameters are required and must be non-empty.
-    These form the per-turn diary — your persistent memory across sessions:
-        tactical: What happened this turn — combat, movements, improvements.
-        strategic: Current standing vs rivals — yields, city count, victory path.
-        tooling: Tool issues or observations. Write "No issues" if none.
-        planning: Concrete actions for the next 5-10 turns.
-        hypothesis: Predictions — enemy behavior, resource needs, timelines.
+    summary is required: one or two sentences on what you did this turn and
+    why. It goes into the live broadcast log and the per-turn diary, your
+    persistent memory across sessions.
 
-    IMPORTANT: Reflections are recorded BEFORE the AI processes its turn.
+    IMPORTANT: The summary is recorded BEFORE the AI processes its turn.
     Anything that surfaces after end_turn (diplomacy proposals, AI movements,
-    events reported in the turn result) belongs in the NEXT turn's diary.
-    If end_turn is blocked and you call it again after resolving the blocker,
-    the diary entry from the first call is kept — do not repeat reflections.
+    events reported in the turn result) belongs in the NEXT turn's summary.
     """
+    if not summary.strip():
+        return "Error: summary required (what you did this turn and why)"
     gs = _get_game(ctx)
-
-    reflections = {
-        "tactical": tactical,
-        "strategic": strategic,
-        "tooling": tooling,
-        "planning": planning,
-        "hypothesis": hypothesis,
-    }
-    missing = [k for k, v in reflections.items() if not v.strip()]
-    if missing:
-        return (
-            f"Empty reflections: {', '.join(missing)}. "
-            "Provide non-empty entries for all 5 fields: "
-            "tactical, strategic, tooling, planning, hypothesis."
-        )
+    reflections = {"summary": summary.strip()}
+    try:
+        bc = await _bind_broadcast(ctx)
+        bc.append("turn", summary.strip(), turn=gs._high_water_turn or None)
+    except Exception:
+        log.debug("Broadcast turn log failed", exc_info=True)
 
     # Model ID comes from CIV_MCP_AGENT_MODEL env var (set by eval runner)
     env_model = os.environ.get("CIV_MCP_AGENT_MODEL", "")
@@ -2112,6 +2252,14 @@ async def end_turn(
             _get_logger(ctx).set_turn(new_turn)
             _get_spatial(ctx).set_turn(new_turn)
             heartbeat.write("playing", turn=new_turn)
+        try:
+            _get_broadcast(ctx).append(
+                "event",
+                Broadcast.event_text(result),
+                turn=new_turn if m else (gs._high_water_turn or None),
+            )
+        except Exception:
+            log.debug("Broadcast event log failed", exc_info=True)
         # Map capture — record terrain (first turn) + ownership delta
         if _diary_civ_type and _diary_seed:
             try:
@@ -2411,7 +2559,9 @@ async def get_purchasable_tiles(ctx: Context, city_id: int) -> str:
 
 
 @mcp.tool()
-async def purchase_tile(ctx: Context, city_id: int, x: int, y: int) -> str:
+async def purchase_tile(
+    ctx: Context, city_id: int, x: int, y: int, why: str = ""
+) -> str:
     """Buy a tile for a city with gold.
 
     Args:
@@ -2420,12 +2570,14 @@ async def purchase_tile(ctx: Context, city_id: int, x: int, y: int) -> str:
         y: Tile Y coordinate
 
     Use get_purchasable_tiles first to see costs and options.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     result = await _logged(
         ctx,
         "purchase_tile",
-        {"city_id": city_id, "x": x, "y": y},
+        {"why": why, "city_id": city_id, "x": x, "y": y},
         lambda: gs.purchase_tile(city_id, x, y),
     )
     _get_camera(ctx).push(x, y, f"purchase tile ({x},{y})")
@@ -2438,7 +2590,7 @@ async def purchase_tile(ctx: Context, city_id: int, x: int, y: int) -> str:
 
 
 @mcp.tool()
-async def change_government(ctx: Context, government_type: str) -> str:
+async def change_government(ctx: Context, government_type: str, why: str = "") -> str:
     """Switch to a different government type.
 
     Args:
@@ -2446,12 +2598,14 @@ async def change_government(ctx: Context, government_type: str) -> str:
 
     Use get_policies to see current government. First switch after
     unlocking a new tier is free (no anarchy).
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "change_government",
-        {"government_type": government_type},
+        {"why": why, "government_type": government_type},
         lambda: gs.change_government(government_type),
     )
 
@@ -2500,7 +2654,7 @@ async def get_gp_advisor(ctx: Context, unit_index: int) -> str:
 
 
 @mcp.tool()
-async def recruit_great_person(ctx: Context, individual_id: int) -> str:
+async def recruit_great_person(ctx: Context, individual_id: int, why: str = "") -> str:
     """Recruit a Great Person using accumulated GP points.
 
     Args:
@@ -2508,19 +2662,24 @@ async def recruit_great_person(ctx: Context, individual_id: int) -> str:
 
     Requires enough Great Person points for that class.
     The GP spawns in your capital. Use get_great_people to check [CAN RECRUIT] status.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "recruit_great_person",
-        {"id": individual_id},
+        {"why": why, "id": individual_id},
         lambda: gs.recruit_great_person(individual_id),
     )
 
 
 @mcp.tool()
 async def patronize_great_person(
-    ctx: Context, individual_id: int, yield_type: str = "YIELD_GOLD"
+    ctx: Context,
+    individual_id: int,
+    yield_type: str = "YIELD_GOLD",
+    why: str = "",
 ) -> str:
     """Buy a Great Person instantly with gold or faith.
 
@@ -2530,18 +2689,20 @@ async def patronize_great_person(
 
     Costs shown in get_great_people output under "Patronize:".
     Requires enough gold/faith to cover the cost.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "patronize_great_person",
-        {"id": individual_id, "yield": yield_type},
+        {"why": why, "id": individual_id, "yield": yield_type},
         lambda: gs.patronize_great_person(individual_id, yield_type),
     )
 
 
 @mcp.tool()
-async def reject_great_person(ctx: Context, individual_id: int) -> str:
+async def reject_great_person(ctx: Context, individual_id: int, why: str = "") -> str:
     """Pass on a Great Person (skip to the next one in that class).
 
     Args:
@@ -2549,12 +2710,14 @@ async def reject_great_person(ctx: Context, individual_id: int) -> str:
 
     Costs faith. The next Great Person in that class becomes available.
     Use when you don't want the current GP and want to save points for a better one.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "reject_great_person",
-        {"id": individual_id},
+        {"why": why, "id": individual_id},
         lambda: gs.reject_great_person(individual_id),
     )
 
@@ -2582,7 +2745,7 @@ async def get_world_congress(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def queue_wc_votes(ctx: Context, votes: str) -> str:
+async def queue_wc_votes(ctx: Context, votes: str, why: str = "") -> str:
     """Pre-configure World Congress votes for the upcoming session.
 
     Args:
@@ -2602,6 +2765,8 @@ async def queue_wc_votes(ctx: Context, votes: str) -> str:
 
     If you don't call this, end_turn will pause at the World Congress session
     and return control to you for interactive voting.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     vote_list = json.loads(votes)
@@ -2609,7 +2774,7 @@ async def queue_wc_votes(ctx: Context, votes: str) -> str:
     async def _run():
         return await gs.queue_wc_votes(vote_list)
 
-    return await _logged(ctx, "queue_wc_votes", {"votes": vote_list}, _run)
+    return await _logged(ctx, "queue_wc_votes", {"why": why, "votes": vote_list}, _run)
 
 
 # ---------------------------------------------------------------------------
@@ -2662,7 +2827,7 @@ async def get_religion_spread(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def set_city_focus(ctx: Context, city_id: int, focus: str) -> str:
+async def set_city_focus(ctx: Context, city_id: int, focus: str, why: str = "") -> str:
     """Set a city's citizen yield priority.
 
     Args:
@@ -2672,12 +2837,14 @@ async def set_city_focus(ctx: Context, city_id: int, focus: str) -> str:
 
     Cities automatically assign citizens to tiles. This biases the AI
     toward the chosen yield type when assigning new citizens.
+
+    why: Optional one-line reason, shown on the live broadcast.
     """
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "set_city_focus",
-        {"city_id": city_id, "focus": focus},
+        {"why": why, "city_id": city_id, "focus": focus},
         lambda: gs.set_city_focus(city_id, focus),
     )
 
