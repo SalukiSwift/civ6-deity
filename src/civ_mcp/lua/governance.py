@@ -367,10 +367,10 @@ print("{SENTINEL}")
 def build_promote_unit(unit_index: int, promotion_type: str) -> str:
     """Promote a unit through the stock PROMOTE command (InGame context).
 
-    Same call the unit panel and promotion popup make:
-    UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE,
-    {[UnitCommandTypes.PARAM_PROMOTION_TYPE] = hash}). No free heal, no
-    direct promotion writes; the game decides legality.
+    Same call the unit panel and promotion popup make: the promotion INDEX
+    is passed as PARAM_PROMOTION_TYPE, and availability comes from the
+    PROMOTIONS list of CanStartCommand's results. No free heal, no direct
+    promotion writes; the game decides legality.
     """
     return f"""
 {_lua_get_unit(unit_index)}
@@ -381,13 +381,18 @@ if promo == nil then {_bail(f"ERR:PROMOTION_NOT_FOUND|{promotion_type}")} end
 local exp = unit:GetExperience()
 if exp == nil then {_bail("ERR:NO_EXPERIENCE|Unit has no experience object")} end
 if exp:HasPromotion(promo.Index) then {_bail(f"ERR:ALREADY_HAS_PROMOTION|{promotion_type}")} end
-local canPromote = UnitManager.CanStartCommand(unit, UnitCommandTypes.PROMOTE, true, true)
-if canPromote then pcall(function() canPromote = exp:CanPromote(promo.Index) end) end
-local tParameters = {{}}
-tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Hash
-if not canPromote then
+local canStart, tResults = UnitManager.CanStartCommand(unit, UnitCommandTypes.PROMOTE, true, true)
+local available = false
+if canStart and tResults and tResults[UnitCommandResults.PROMOTIONS] then
+    for _, idx in pairs(tResults[UnitCommandResults.PROMOTIONS]) do
+        if idx == promo.Index then available = true end
+    end
+end
+if not available then
     {_bail("ERR:CANNOT_PROMOTE|The game does not offer this promotion now (not enough XP, wrong class, missing prerequisite, or already promoted this turn)")}
 end
+local tParameters = {{}}
+tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Index
 UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE, tParameters)
 local promoName = Locale.Lookup(promo.Name)
 print("OK:PROMOTED|" .. promoName .. "|hp:" .. (unit:GetMaxDamage() - unit:GetDamage()) .. "/" .. unit:GetMaxDamage() .. "|moves:" .. unit:GetMovesRemaining())

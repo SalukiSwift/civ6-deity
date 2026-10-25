@@ -893,37 +893,18 @@ async def execute_end_turn(gs: GameState) -> str:
                     continue
 
                 # --- Stale promotion notifications ---
-                # Use the XP-threshold formula to decide whether any unit
-                # genuinely has enough XP for another promotion:
-                # needed = T1 * (promoCount+1) * (promoCount+2) / 2.
-                # If none does, only the stale notification is dismissed.
+                # Ask the game itself (InGame CanStartCommand PROMOTE, as the
+                # promotion popup does) whether any unit can still promote.
+                # If none can, only the stale notification is dismissed.
                 if blocking_type == "ENDTURN_BLOCKING_UNIT_PROMOTION":
                     try:
-                        # Step 1 (GameCore): check the XP formula. Read-only: nothing is written to the units.
-                        check_lines = await gs.conn.execute_read(
+                        check_lines = await gs.conn.execute_write(
                             f"local me = Game.GetLocalPlayer(); "
                             f"local anyNeed = false; "
                             f"for i, u in Players[me]:GetUnits():Members() do "
                             f"  if u:GetX() ~= -9999 then "
-                            f"    local ok, exp = pcall(function() return u:GetExperience() end); "
-                            f"    if ok and exp then "
-                            f"      local ui = GameInfo.Units[u:GetType()]; "
-                            f'      local promClass = ui and ui.PromotionClass or ""; '
-                            f'      if promClass ~= "" then '
-                            f"        local promoCount = 0; "
-                            f"        for p in GameInfo.UnitPromotions() do "
-                            f"          if p.PromotionClass == promClass and exp:HasPromotion(p.Index) then "
-                            f"            promoCount = promoCount + 1 "
-                            f"          end "
-                            f"        end; "
-                            f"        local t1 = exp:GetExperienceForNextLevel(); "
-                            f"        local xp = exp:GetExperiencePoints(); "
-                            f"        local needed = t1 * (promoCount + 1) * (promoCount + 2) / 2; "
-                            f"        if xp >= needed then "
-                            f"          anyNeed = true "
-                            f"        end "
-                            f"      end "
-                            f"    end "
+                            f"    local ok, can = pcall(function() return UnitManager.CanStartCommand(u, UnitCommandTypes.PROMOTE, true, true) end); "
+                            f"    if ok and can then anyNeed = true; break end "
                             f"  end "
                             f"end; "
                             f'print(anyNeed and "NEEDS_PROMO" or "NO_PROMO_NEEDED"); '
@@ -985,9 +966,10 @@ async def execute_end_turn(gs: GameState) -> str:
                             f"  if u:GetX() ~= -9999 and u:GetMovesRemaining() > 0 then "
                             f"    anyMoves = true; break end end; "
                             f"if not anyMoves then "
+                            f"  local issued = 0; "
                             f"  for _, u in Players[me]:GetUnits():Members() do "
-                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.CanStartOperation(u, skipOp.Hash, nil, true) then UnitManager.RequestOperation(u, skipOp.Hash) end "
-                            f'  end; print("AUTO_SKIPPED") '
+                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.CanStartOperation(u, skipOp.Hash, nil, false) then UnitManager.RequestOperation(u, skipOp.Hash); issued = issued + 1 end "
+                            f'  end; print(issued > 0 and "AUTO_SKIPPED" or "NOTHING_TO_SKIP") '
                             f'else print("UNITS_NEED_ORDERS") end; '
                             f'print("{lq.SENTINEL}")'
                         )

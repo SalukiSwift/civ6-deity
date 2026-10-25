@@ -9,16 +9,16 @@ R = read only, M = mutates the game, L = game or save lifecycle (loading, launch
 1. Visibility. Anything about a tile is read only when the game would show it to a human: live owner, improvement, units and yields only on IsVisible tiles; terrain and revealed features on IsRevealed tiles; strategic resources only when the player's tech reveals them; foreign cities only when their plot is revealed. Fogged tiles come from last-seen memory (fog.json), never from live state. Rival civ names appear only after HasMet; others read "an unmet civilization".
 2. Rival data. Rival numbers come from the World Rankings values (score, era, techs, military strength, tourism, victory points) and revealed cities. No rival yields, civics, faith, stockpiles or population.
 3. Deal screen (controller ruling R7). The Make Deal data (rival gold, gold per turn, favor, tradeable resources, city list) is fair for any met civ because a human can open Make Deal at will. There is no session guard.
-4. InGame-only mutations. Every change to the game goes through the InGame Lua state using the same player commands the UI issues (UnitManager.RequestOperation, UnitManager.RequestCommand, CityManager.RequestOperation, and so on). GameCore (GameCore_Tuner) is read only. Promote uses `UnitCommandTypes.PROMOTE` exactly as the unit panel and promotion popup do, with no free heal. Skip uses the stock `UNITOPERATION_SKIP_TURN` operation, as the unit panel's Skip Turn button does. Research and civics have no GameCore fallback: if the game refuses, the tool reports the error.
+4. InGame-only mutations. Every change to the game goes through the InGame Lua state using the same player commands the UI issues (UnitManager.RequestOperation, UnitManager.RequestCommand, CityManager.RequestOperation, and so on). GameCore (GameCore_Tuner) is read only. Promote uses `UnitCommandTypes.PROMOTE` exactly as the promotion popup does (promotion index as the parameter, availability from the PROMOTIONS result of CanStartCommand), with no free heal. Skip uses the stock `UNITOPERATION_SKIP_TURN` operation, as the unit panel's Skip Turn button does. Research and civics have no GameCore fallback: if the game refuses, the tool reports the error.
 5. No reads of Logs/ or any game-written log files. The agent gets game information only through the tools above.
 6. The map seed is hidden. Run identity uses a hash of the seed, never the seed.
-7. No auto-answers to strategic prompts. Raze, keep, liberate and disloyal-city decisions are reported as blockers with the city_action hint; end_turn never answers them. An AI counter-offer is returned as `COUNTER:` text and the session stays open for respond_to_trade; the tool never accepts on the agent's behalf.
+7. No auto-answers to strategic prompts. Raze, keep, liberate and disloyal-city decisions are reported as blockers with the city_action hint; end_turn never answers them. An AI counter-offer is returned as `COUNTER:` text and the session stays open for respond_to_trade; the tool never accepts a changed deal on the agent's behalf. Only an unchanged acceptance (the AI agrees to exactly the terms sent) is confirmed automatically.
 8. The raw Lua escape hatch `run_lua` is not registered unless the server is started with `CIV_MCP_DEV_LUA=1`. It is a developer tool and is not part of any fair run.
 
 ## Save-load policy
 
 - Every load tool (`load_save`, `load_game_save`, `load_save_from_menu`, `restart_and_load`) requires a non-empty `reason`. An empty reason returns an error and nothing is loaded.
-- Every load is recorded, whether it comes from a tool, from the automatic boot (`CIV_MCP_SAVE_FILE`), from connection recovery ("connection lost 5x") or from hang recovery. Each one appends a `load` entry to the broadcast log: `loaded <save>: <reason>`.
+- Every load that gets as far as loading (launcher results starting or containing FAILED or ABORTED are not recorded) is recorded, whether it comes from a tool, from the automatic boot (`CIV_MCP_SAVE_FILE`), from connection recovery ("connection lost 5x") or from hang recovery. Each one appends a `load` entry to the broadcast log: `loaded <save>: <reason>`.
 - Upstream's save-scum thresholds are kept: a minor warning at 3 loads across 3 distinct turns (span 10), a strong warning at 5 and 5 (span 20), and a hard stop at 8 and 8 (span 30), counting only loads made during play.
 - The hard stop ends the run; no further actions are processed.
 
@@ -52,7 +52,7 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `assign_governor` | M | Assigns a governor to a city | Governors screen | game rules |
 | `promote_governor` | M | Promotes a governor | Governors screen | game rules |
 | `get_unit_promotions` | R | Promotions a unit can take | Promotion popup | none needed |
-| `promote_unit` | M | Promotes a unit (stock PROMOTE command, no heal) | Unit panel promotion popup | game rules (CanStartCommand) |
+| `promote_unit` | M | Promotes a unit (stock PROMOTE command with the promotion index, checked against the game's offered list, no heal) | Unit panel promotion popup | game rules (CanStartCommand) |
 | `get_city_states` | R | Met city-states, envoys, types | City-States screen | HasMet |
 | `send_envoy` | M | Sends an envoy | City-States screen | game rules |
 | `get_pantheon_beliefs` | R | Pantheon status and choices | Pantheon popup | none needed |
@@ -64,7 +64,7 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `choose_dedication` | M | Chooses a dedication | Era popup | game rules |
 | `get_trade_options` | R | Rival gold, gold per turn, favor, tradeable resources and city list for a met civ | Make Deal screen (see R7) | HasMet, deal screen |
 | `respond_to_trade` | M | Accepts or rejects a pending deal | Diplomacy deal popup | game rules |
-| `propose_trade` | M | Proposes a deal; an AI counter is returned as COUNTER text and never auto-accepted | Make Deal screen | HasMet, deal screen |
+| `propose_trade` | M | Proposes a deal; unchanged acceptance is confirmed, a changed deal is returned as COUNTER text and left for respond_to_trade | Make Deal screen | HasMet, deal screen |
 | `propose_peace` | M | Proposes white peace | Diplomacy screen | HasMet |
 | `set_policies` | M | Slots policy cards | Government screen | game rules |
 | `respond_to_diplomacy` | M | Answers a diplomacy encounter | Diplomacy popup | game rules |

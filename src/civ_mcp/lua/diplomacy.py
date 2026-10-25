@@ -796,6 +796,17 @@ local deal = DealManager.GetWorkingDeal(DealDirection.OUTGOING, me, target)
 if not deal then {_bail("ERR:NO_DEAL_OBJECT|Failed to get working deal")} end
 {offer_lua}
 {request_lua}
+local function dealSig(d)
+    local t = {{}}
+    for it in d:Items() do
+        local vt = -1
+        pcall(function() vt = it:GetValueType() or -1 end)
+        table.insert(t, (it:GetFromPlayerID() or -1) .. ":" .. (it:GetType() or -1) .. ":" .. (it:GetSubType() or -1) .. ":" .. vt .. ":" .. (it:GetAmount() or 0) .. ":" .. (it:GetDuration() or 0))
+    end
+    table.sort(t)
+    return table.concat(t, ",")
+end
+local sentSig = dealSig(deal)
 DiplomacyManager.RequestSession(me, target, "MAKE_DEAL")
 DealManager.SendWorkingDeal(DealProposalAction.PROPOSED, me, target)
 local sid = DiplomacyManager.FindOpenSessionID(me, target)
@@ -806,9 +817,14 @@ if sid and sid >= 0 then
         return DealManager.GetWorkingDeal(DealDirection.INCOMING, me, target)
     end)
     if ok and respDeal and respDeal:GetItemCount() and respDeal:GetItemCount() > 0 then
-        -- The AI countered. Report its terms; accepting is the player's call
-        -- (respond_to_trade), so the session is left open.
-        result = "COUNTER"
+        if dealSig(respDeal) == sentSig then
+            -- Unchanged: the AI agrees to exactly what we offered; confirm it.
+            DealManager.SendWorkingDeal(DealProposalAction.ACCEPTED, me, target)
+            result = "ACCEPTED"
+        else
+            -- A changed deal is the player's call (respond_to_trade); leave the session open.
+            result = "COUNTER"
+        end
         local weGive = {{}}
         local theyGive = {{}}
         for item in respDeal:Items() do
@@ -838,7 +854,7 @@ if sid and sid >= 0 then
             if fromID == me then table.insert(weGive, desc)
             else table.insert(theyGive, desc) end
         end
-        if #weGive > 0 or #theyGive > 0 then
+        if result == "COUNTER" and (#weGive > 0 or #theyGive > 0) then
             termsStr = ""
             if #weGive > 0 then termsStr = termsStr .. " We give: " .. table.concat(weGive, ", ") .. "." end
             if #theyGive > 0 then termsStr = termsStr .. " They give: " .. table.concat(theyGive, ", ") .. "." end

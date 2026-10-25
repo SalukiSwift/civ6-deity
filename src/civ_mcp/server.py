@@ -165,7 +165,7 @@ async def _auto_boot(
     log.info("Auto-boot: loading save '%s'...", save_name)
     result = await load_game_save(conn, save_name)
     log.info("Auto-boot: load result: %s", result)
-    if record_load is not None:
+    if record_load is not None and _launcher_load_ok(str(result)):
         record_load(save_name, "auto-boot from CIV_MCP_SAVE_FILE")
     heartbeat.write("loading")
 
@@ -326,6 +326,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     gs = GameState(conn)
     log.info("Game logger session: %s", logger.session_id)
 
+    broadcast = Broadcast(Path(__file__).parents[2] / "campaign")
+
+    def _announce_load(save_name: str, reason: str) -> None:
+        broadcast.append(
+            "load",
+            f"loaded {save_name}: {reason}",
+            turn=gs._high_water_turn or None,
+        )
+
+    gs.on_load = _announce_load
+
     # Auto-boot: launch game + load save when running as eval
     save_file = os.environ.get("CIV_MCP_SAVE_FILE")
     if save_file:
@@ -345,17 +356,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     uvi_server = uvicorn.Server(uvi_config)
     api_task = asyncio.create_task(uvi_server.serve())
     log.info("Web API starting on http://0.0.0.0:8000")
-
-    broadcast = Broadcast(Path(__file__).parents[2] / "campaign")
-
-    def _announce_load(save_name: str, reason: str) -> None:
-        broadcast.append(
-            "load",
-            f"loaded {save_name}: {reason}",
-            turn=gs._high_water_turn or None,
-        )
-
-    gs.on_load = _announce_load
 
     try:
         yield AppContext(
@@ -423,8 +423,9 @@ def _require_reason(reason: str) -> str | None:
 def _launcher_load_ok(result: str) -> bool:
     """Heuristic: did a launcher (menu/restart) load get as far as loading?"""
     return not (
-        result.startswith(("Save '", "No autosaves", "Error"))
+        result.startswith(("Save '", "No autosaves", "Error", "FAILED"))
         or "ABORTED" in result
+        or "FAILED" in result
     )
 
 
@@ -1460,7 +1461,10 @@ async def propose_trade(
         request_favor: Diplomatic favor to request from them
         request_open_borders: True to request their open borders
         joint_war_target: Player ID of a third civ to declare joint war against
-        mode: "send" to commit the deal, "test" to preview AI's counter-offer without committing
+        mode: "send" to commit the deal, "test" to preview AI's counter-offer without committing.
+              If the AI changes the terms, send returns "COUNTER: ..." and leaves the
+              session open; call respond_to_trade to accept or reject the changed deal.
+              An unchanged acceptance is confirmed automatically.
 
     Examples: Gift 100 gold: offer_gold=100. Trade silk for 3 gpt: offer_resources="RESOURCE_SILK", request_gold_per_turn=3.
     Mutual open borders: offer_open_borders=True, request_open_borders=True.
@@ -3128,6 +3132,11 @@ async def restart_and_load(
                     actual,
                 )
                 result2 = await game_launcher.restart_and_load(save_name)
+                if _launcher_load_ok(result2):
+                    gs.record_load(
+                        save_name or "latest autosave",
+                        reason + " (retry: wrong game loaded)",
+                    )
                 for attempt in range(30):
                     try:
                         await conn.reconnect()

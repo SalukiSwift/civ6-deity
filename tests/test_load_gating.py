@@ -85,3 +85,36 @@ def test_launcher_load_ok_heuristic():
     assert server._launcher_load_ok("Kill: ok | Load: done")
     assert not server._launcher_load_ok("Kill | ABORTED: Game failed to launch.")
     assert not server._launcher_load_ok("Save 'x' not found. Available: none")
+
+
+def test_launcher_load_ok_recognises_failed_forms():
+    server = _server()
+    assert not server._launcher_load_ok("FAILED: Could not find 'Load Game' button.")
+    assert not server._launcher_load_ok(
+        "Kill: ok | Launch: ok | Load: FAILED: Save 'x' not found. Steps completed: a"
+    )
+    assert not server._launcher_load_ok("Error: nope")
+
+
+def test_on_load_broadcasts_via_record_load():
+    gs = _gs()
+    entries = []
+    gs.on_load = lambda n, r: entries.append(f"loaded {n}: {r}")
+    gs.record_load("s", "r")
+    assert entries == ["loaded s: r"]
+
+
+def test_lifespan_sets_on_load_before_auto_boot():
+    import inspect
+
+    server = _server()
+    src = inspect.getsource(server.lifespan)
+    assert src.index("gs.on_load = _announce_load") < src.index("await _auto_boot(")
+
+
+def test_restart_retry_is_recorded():
+    import inspect
+
+    server = _server()
+    src = inspect.getsource(server.restart_and_load)
+    assert "(retry: wrong game loaded)" in src

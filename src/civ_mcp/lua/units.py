@@ -860,7 +860,7 @@ def build_skip_unit(unit_index: int) -> str:
 {_lua_get_unit(unit_index)}
 local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]
 if skipOp == nil then {_bail("ERR:NO_SKIP_OPERATION")} end
-if not UnitManager.CanStartOperation(unit, skipOp.Hash, nil, true) then
+if not UnitManager.CanStartOperation(unit, skipOp.Hash, nil, false) then
     {_bail("ERR:CANNOT_SKIP|Unit cannot skip its turn")}
 end
 UnitManager.RequestOperation(unit, skipOp.Hash)
@@ -919,7 +919,7 @@ if skipOp == nil then print("ERR:NO_SKIP_OPERATION"); print("{SENTINEL}"); retur
 for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
     if x ~= -9999 and unit:GetMovesRemaining() > 0 then
-        if UnitManager.CanStartOperation(unit, skipOp.Hash, nil, true) then
+        if UnitManager.CanStartOperation(unit, skipOp.Hash, nil, false) then
             UnitManager.RequestOperation(unit, skipOp.Hash)
             count = count + 1
         end

@@ -118,8 +118,11 @@ def test_propose_trade_send_does_not_auto_accept():
     lua = build_propose_trade(
         3, [{"type": "GOLD", "amount": 10}], [{"type": "GOLD", "amount": 20}]
     )
-    assert "DealProposalAction.ACCEPTED" not in lua
-    assert "OK:COUNTER:" in lua
+    # ACCEPTED is only ever sent inside the unchanged-terms branch
+    pre, _, post = lua.partition("DealProposalAction.ACCEPTED")
+    assert "dealSig(respDeal) == sentSig" in pre.split("DealProposalAction.PROPOSED")[1]
+    assert post.count("DealProposalAction.ACCEPTED") == 0
+    assert "OK:COUNTER:" in lua and 'result = "COUNTER"' in lua
 
 
 def test_propose_trade_counter_leaves_session_open():
@@ -129,6 +132,36 @@ def test_propose_trade_counter_leaves_session_open():
     )
     assert result.startswith("COUNTER:")
     assert len(stub.write_calls) == 1  # no UI-dismiss follow-up
+
+
+def test_propose_trade_unchanged_acceptance_is_accepted():
+    stub = _Stub(write_lines=[["OK:ACCEPTED|Trade accepted with Rome"]])
+    result = asyncio.run(_gs(stub).propose_trade(3, [{"type": "GOLD", "amount": 10}], []))
+    assert result.startswith("ACCEPTED")
+    assert len(stub.write_calls) == 2  # trade + UI dismiss, as before
+
+
+def test_promote_passes_index_and_checks_promotions_result():
+    lua = build_promote_unit(5, "PROMOTION_BATTLECRY")
+    assert "PARAM_PROMOTION_TYPE] = promo.Index" in lua
+    assert "promo.Hash" not in lua
+    assert "tResults[UnitCommandResults.PROMOTIONS]" in lua
+    assert "CanPromote" not in lua
+
+
+def test_skip_uses_strict_availability_check():
+    for lua in (build_skip_unit(5), build_skip_remaining_units()):
+        assert "skipOp.Hash, nil, false)" in lua
+        assert "skipOp.Hash, nil, true)" not in lua
+    src = inspect.getsource(end_turn)
+    assert "skipOp.Hash, nil, false)" in src and "skipOp.Hash, nil, true)" not in src
+    assert "NOTHING_TO_SKIP" in src
+
+
+def test_stale_promotion_check_asks_the_game():
+    src = inspect.getsource(end_turn)
+    assert "GetExperienceForNextLevel" not in src
+    assert "UnitCommandTypes.PROMOTE, true, true" in src
 
 
 def test_blocker_handlers_do_not_auto_keep_cities():
