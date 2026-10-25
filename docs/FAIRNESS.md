@@ -108,6 +108,6 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `launch_game` | L | Starts the game | Steam launch | none needed |
 | `load_save_from_menu` | L | Loads a save from the main menu; reason required, logged | Main menu Load Game | reason required, logged |
 | `restart_and_load` | L | Kill, relaunch and load; reason required, logged | Exit, relaunch, Load Game | reason required, logged |
-| `new_game` | L | Creates the fixed Deity/Fractal/Standard game from the main menu by the same calls the Play Now button makes | Advanced Setup | none (no in-game effect) |
+| `new_game` | L | Creates the fixed Deity/Fractal/Standard/Gathering Storm game for a chosen leader: the same setup calls the Play Now button makes (run in the MainMenu context, settings fixed in code), then one BEGIN GAME click, sent only while Civ 6 is the foreground window; settings are checked in the new game. A game in progress is first left without saving via the Exit to Main Menu call | Exit to Main Menu, Advanced Setup, Begin Game | `why` required, logged; settings not choosable |
 
 Later tasks append rows for `get_situation` and `batch_orders`.

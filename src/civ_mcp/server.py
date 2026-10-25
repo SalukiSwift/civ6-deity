@@ -21,7 +21,7 @@ import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
-from civ_mcp.newgame import GAME_SETTINGS, settings_card, valid_leader
+from civ_mcp.newgame import GAME_SETTINGS, create_game, settings_card, valid_leader
 from civ_mcp.broadcast import (
     ACTION_TOOLS,
     KINDS,
@@ -3166,16 +3166,49 @@ async def load_save_from_menu(
     return result
 
 
+@asynccontextmanager
+async def _background_paused(ctx: Context):
+    """Stop the popup watcher, camera and game-over watchdog for a while.
+
+    They poll InGame and reconnect on their own; during new_game that would
+    race the main-menu calls and spam the tuner while it is loading.
+    """
+    life = ctx.request_context.lifespan_context
+    services = [
+        svc
+        for svc in (
+            getattr(life, "popup_watcher", None),
+            getattr(life, "camera", None),
+            getattr(life, "watchdog", None),
+        )
+        if svc is not None
+    ]
+    for svc in services:
+        await svc.stop()
+    camera = getattr(life, "camera", None)
+    if camera is not None:
+        camera.clear()  # queued hops belong to the old game
+    try:
+        yield
+    finally:
+        for svc in services:
+            svc.start()
+
+
 @mcp.tool(annotations={"destructiveHint": True})
 async def new_game(ctx: Context, leader: str, why: str) -> str:
-    """Prepare the fixed new game (Deity, Fractal, Standard size and speed).
+    """Start the fixed new game: Deity, Fractal, Standard size and speed,
+    Gathering Storm, playing `leader`.
 
     Args:
         leader: A LEADER_* name from docs/leaders.txt, e.g. LEADER_GILGAMESH.
         why: Required. Why you chose this leader (logged publicly).
 
-    Returns the settings card. Create the game from the main menu with those
-    settings, then call get_game_overview.
+    Needs Civ 6 running. If a game is in progress it is LEFT WITHOUT SAVING
+    (Exit to Main Menu) first. From the main menu it sets up the game as the
+    Play Now button does, clicks BEGIN GAME on the load screen, then checks
+    every setting in the new game. Takes about a minute. Returns
+    "Game started: ..." or an error naming what went wrong.
     """
     if not valid_leader(leader):
         return (
@@ -3191,10 +3224,56 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
         f"new game: {leader} ({why.strip()})",
         meta={**GAME_SETTINGS, "leader": leader},
     )
-    return (
-        settings_card(leader)
-        + "\n\nCreate this game from the main menu, then call get_game_overview."
+    gs = _get_game(ctx)
+    manual = (
+        "\n\n"
+        + settings_card(leader)
+        + "\nIf needed, create this game from the main menu by hand, then call "
+        "get_game_overview."
     )
+    try:
+        async with _background_paused(ctx):
+            result = await create_game(gs.conn, leader)
+    except Exception as e:  # noqa: BLE001 - report, never crash the server
+        log.warning("new_game failed", exc_info=True)
+        return f"Error: new_game failed: {e}{manual}"
+    log.info(
+        "new_game %s: ok=%s click=%s timings=%s found=%s",
+        leader,
+        result.ok,
+        result.click,
+        result.timings,
+        result.found,
+    )
+    if not result.ok:
+        note = (
+            "\n(The previous game was left without saving; its autosaves remain.)"
+            if result.left_game
+            else ""
+        )
+        return result.message + note + ("" if result.click else manual)
+
+    # The overview's own difficulty read must agree (it is what the agent sees).
+    try:
+        ov = await gs.get_game_overview()
+        difficulty = ov.difficulty
+    except Exception as e:  # noqa: BLE001
+        difficulty = f"<overview failed: {e}>"
+    if difficulty.strip().lower() != "deity":
+        return (
+            f"Error: the new game started but get_game_overview reports "
+            f"difficulty {difficulty!r}, not Deity. The game is left running "
+            "for inspection."
+        )
+    bc = await _bind_broadcast(ctx)
+    turn = result.found.get("turn", "")
+    bc.append(
+        "game",
+        result.message,
+        turn=int(turn) if turn.isdigit() else None,
+        meta={**GAME_SETTINGS, "leader": leader, "click": result.click},
+    )
+    return result.message
 
 
 @mcp.tool(annotations={"destructiveHint": True})

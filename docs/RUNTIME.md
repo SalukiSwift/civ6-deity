@@ -61,6 +61,14 @@ cmd.exe /c start steam://run/289070
 
 Steam then shows a **"Select launch option"** dialog (DX12 preselected / DX11). Someone has to click Play. Ticking "Always use this option" in that dialog (April's call) would let scripted launches skip it.
 
+Starting the DX12 executable directly skips that dialog (checked 2026-10-25 with Steam running: no dialog, process up at +20 s, port 4318 listening at +25 s):
+
+```bash
+cd /mnt/c && cmd.exe /c start "" /D "C:\Program Files (x86)\Steam\steamapps\common\Sid Meier's Civilization VI\Base\Binaries\Win64Steam" "C:\Program Files (x86)\Steam\steamapps\common\Sid Meier's Civilization VI\Base\Binaries\Win64Steam\CivilizationVI_DX12.exe"
+```
+
+The port opens long before the main menu. Until the menu is up the state list has only `Main State` and `DebugHotloadCache`; `FrontEnd` and `MainMenu` were there about 3 to 4 minutes after launch on that run (intro and shader warm-up). Wait for `FrontEnd` before calling `new_game`.
+
 Check the tuner port (from WSL):
 
 ```bash
@@ -83,7 +91,7 @@ The script prints the raw `LSQ:` reply, which alternates `index, name`: `[0] 0`,
 python3 scripts/mcp_smoke.py
 ```
 
-Expected output: `serverInfo.name: Civilization VI` and `tool count: 76`, exit 0. The server starts fine with the game closed: the lifespan does not connect eagerly; the popup watcher retries `127.0.0.1:4318` about every 2 s and ignores the refusal. Closing stdin shuts it down cleanly (no leftover `python.exe`, nothing left on :8000).
+Expected output: `serverInfo.name: Civilization VI` and `tool count: 81` (76 at Task 1; later tasks added tools), exit 0. The server starts fine with the game closed: the lifespan does not connect eagerly; the popup watcher retries `127.0.0.1:4318` about every 2 s and ignores the refusal. Closing stdin shuts it down cleanly (no leftover `python.exe`, nothing left on :8000).
 
 Against a live game the server logged `Connected: Civ6 ...` and `Discovered 99 Lua states (GameCore=2, InGame=94)`.
 
@@ -101,7 +109,7 @@ Indexes are **not stable**. The game pushes unsolicited `L` messages (tag -1) wi
 
 ### Main menu (32 states)
 
-`FrontEnd` (30) is the front-end UI state that accepted the Play Now call below. `MainMenu` (24) is the main menu screen context (`ContextPtr:IsHidden()` returned `false` there). `GameCore_Tuner` and `InGame` do not exist yet.
+`FrontEnd` (30) is the shell context; its presence means "at the main menu". `MainMenu` (24) is the main menu screen context (`ContextPtr:IsHidden()` returned `false` there) and the one that includes `PlayerSetupLogic`/`GameSetupLogic`: `BuildHeadlessGameSetup`, `RebuildPlayerParameters` and `GameSetup_RefreshParameters` are functions in `MainMenu` (and `HostGame`) but `nil` in `FrontEnd`. So game setup runs in `MainMenu`. `GameCore_Tuner` and `InGame` do not exist yet.
 
 ```
  0 Main State
@@ -242,29 +250,95 @@ Indexes are **not stable**. The game pushes unsolicited `L` messages (tag -1) wi
 98 InvitePopup
 ```
 
-## Starting a game from the main menu through the tuner
+## Starting a game from the main menu through the tuner (`new_game`)
 
-Sent to the `FrontEnd` state at the main menu:
+Verified live 2026-10-25 through the MCP tool, three times: `LEADER_GILGAMESH` (from the main menu), `LEADER_AMANITORE` (from inside a running game) and `LEADER_TOMYRIS` (from the main menu after the server had idled there for 25 s). Every check passed each time.
+
+### What `new_game(leader, why)` does
+
+1. Pauses the popup watcher, camera and game-over watchdog (they poll and reconnect on their own; see below), then connects fresh, retrying up to 5 times.
+2. If `InGame` is loaded: runs `Events.ExitToMainMenu()` in `InGame`. That is the call the in-game menu's Exit to Main Menu button makes after its "are you sure" dialog is answered Yes (`InGameTopOptionsMenu.lua` `OnYes`). No dialog, no save. The main menu (`FrontEnd` + `MainMenu`) was back after about 10 s; the tool then waits 3 s more for the menu's `OnShow` (which calls `SetToDefaults`).
+3. If `FrontEnd` is not loaded (and no game): returns "not at the main menu".
+4. Resolves `MainMenu` by name from a fresh `LSQ:` and runs the setup Lua there (below). It answers `NEWGAME|true|nil` within 0.5 s, and the front end tears down into the load screen.
+5. Clicks BEGIN GAME on the load screen (below).
+6. Reconnects every 3 s until `InGame` and `GameCore_Tuner` are both listed, then runs the verification Lua in `InGame` and the overview's own difficulty read.
+7. Binds the broadcast (game directory named after the civ, `meta.json` leader from `pending_leader`) and logs `Game started: <leader>, Deity, Fractal, Standard, Gathering Storm`, which it also returns.
+
+Waits are bounded: 5 connect attempts, 120 s for the menu after leaving a game, 300 s for the BEGIN GAME button, 120 s for `InGame`. On any failure it returns an error naming the step; a settings mismatch leaves the game running for inspection.
+
+### Setup Lua (run in `MainMenu`)
 
 ```lua
-GameConfiguration.SetToDefaults(); Network.HostGame(ServerType.SERVER_TYPE_NONE)
+local ok, err = pcall(function()
+GameConfiguration.SetToDefaults();
+GameConfiguration.SetRuleSet("RULESET_EXPANSION_2");
+GameConfiguration.SetValue("GAME_HANDICAP", DB.MakeHash("DIFFICULTY_DEITY"));
+GameConfiguration.SetValue("GAME_SPEED_TYPE", DB.MakeHash("GAMESPEED_STANDARD"));
+MapConfiguration.SetScript("Fractal.lua");
+MapConfiguration.SetValue("MAP_SIZE", DB.MakeHash("MAPSIZE_STANDARD"));
+PlayerConfigurations[0]:SetLeaderTypeName("LEADER_GILGAMESH");
+BuildHeadlessGameSetup();
+RebuildPlayerParameters(true);
+GameSetup_RefreshParameters();
+ReleasePlayerParameters();
+HideGameSetup();
+Network.HostGame(ServerType.SERVER_TYPE_NONE);
+end)
+print("NEWGAME|" .. tostring(ok) .. "|" .. tostring(err))
+print("---END---")
 ```
 
-Reply `1`, then `JoiningRoom: OnFinishedGameplayContentConfigure() g_waitingForContentConfigure=true`, then the front-end states are torn down one by one (an `L` push per step) down to `0 Main State, 1 DebugHotloadCache, 2 LoadScreen`. A new map is generated with no clicks.
+A dry run (everything except `HostGame`, configuration dumped after each step) showed the headless rebuild and refresh keep every value: the leader stays `LEADER_GILGAMESH` (civ filled in as `CIVILIZATION_SUMERIA` by the refresh), ruleset, difficulty, speed, script and size are unchanged, and the player count goes from 6 to 8 (the Standard size default). So the leader does not need to be set after the rebuild. Player 0's own handicap still reads Prince in the front end; the engine sets it to Deity when the game starts (checked in game).
 
-Two limits seen on this run:
+### BEGIN GAME
 
-- **Begin Game still needs a click.** The load screen stops at the leader intro with a "BEGIN GAME" button and waits there; a human clicked it.
-- **The ruleset is the base game.** `SetToDefaults()` sets `RULESET_STANDARD` (MainMenu.lua says so in a comment near its Play Now handler, which then clears `RULESET` and rebuilds the setup parameters). The resulting game reported `GameConfiguration.GetRuleSet()` = `RULESET_STANDARD`, and `Players[0].GetFavor` was nil, so `get_game_overview` failed at its `p:GetFavor()` line (`function expected instead of nil`). A Gathering Storm game needs the ruleset set explicitly before `HostGame`.
+Timeline from `HostGame` (2560x1440 fullscreen): "LOADING, PLEASE WAIT..." until about 20 s, then the leader screen, then the BEGIN GAME button at about 38 to 40 s (`LoadScreen.lua` keeps the button hidden until `LoadGameViewStateDone`, so a visible button is a clickable one).
+
+How it is clicked (`newgame.click_begin_game_sync`):
+
+- The window is captured with PrintWindow and read with Windows OCR every 2 s; capturing does not need focus.
+- Windows OCR reads the small-caps label loosely: `BEGIN (GAIME` at screen (1059, 1078). The matcher takes a short line starting with "begin" in the lower half of the window (the leader text above contains "begins your" and "to begin your" inside long lines).
+- Positional fallback: (0.414, 0.749) of the client area, used only if the leader screen has been up for 120 s without OCR reading the button. Not needed in any run.
+- Input is sent only when the foreground window belongs to a Civ 6 process (foreground window's process image name is one of the Civ 6 executables). Exactly one click, with SendInput, so the real cursor moves there. If Civ 6 is not in front, nothing is sent and the tool says to click BEGIN GAME by hand.
+
+Measured (seconds from the tool call): Gilgamesh hosted 2.4, clicked (OCR) 42.6, `InGame` 46.0, tool returned 48.7. Amanitore (from a running game) menu back 10.1, hosted 14.2, clicked 52.2, `InGame` 55.6, returned 58.0. Tomyris hosted 2.4, clicked 40.6, `InGame` 44.0, returned 46.4. The tuner served Lua again within about 3.5 s of the click. No dialogs appeared.
+
+### Verification (run in `InGame`)
+
+`newgame.VERIFY_LUA` prints each setting as the database type whose hash matches the configuration value. Output for the first run (the other two differ only in `leader`: `LEADER_AMANITORE`, `LEADER_TOMYRIS`):
+
+```
+NG|ruleset|RULESET_EXPANSION_2        GameConfiguration.GetRuleSet()
+NG|favor|true                         Players[me].GetFavor exists (Gathering Storm)
+NG|difficulty|DIFFICULTY_DEITY        GAME_HANDICAP
+NG|player_difficulty|DIFFICULTY_DEITY PlayerConfigurations[me]:GetHandicapTypeID()
+NG|speed|GAMESPEED_STANDARD
+NG|map_script|Fractal.lua             MapConfiguration.GetScript()
+NG|map_size|MAPSIZE_STANDARD
+NG|grid|84x54                         Map.GetGridSize()
+NG|leader|LEADER_GILGAMESH
+NG|turn|1
+```
+
+The same Lua in `GameCore_Tuner` fails (`GetRuleSet` and `GetFavor` are InGame-only). `get_game_overview` then reported `Turn 1 | Sumeria (Gilgamesh) | Score: 0 | Deity`, `Turn 1 | Nubia (Amanitore) | ... | Deity` and `Turn 1 | Scythia (Tomyris) | ... | Deity`, each with a `Favor:` line.
+
+Side effect: each game start makes the game write `AutoConfigGame_NN.Civ6Cfg` and `AutoSave_0001.Civ6Save` in `Saves\Single\auto` (it moves the previous ones to `auto\prev`), as it does for a game started by hand.
+
+### Earlier attempt (Task 1)
+
+`GameConfiguration.SetToDefaults(); Network.HostGame(ServerType.SERVER_TYPE_NONE)` sent to `FrontEnd` also starts a game, but `SetToDefaults()` sets `RULESET_STANDARD`, so that game was base-game (`GetRuleSet()` = `RULESET_STANDARD`, `Players[0].GetFavor` nil, `get_game_overview` failed at its `p:GetFavor()` line). Setting the ruleset explicitly, as above, fixes it.
 
 ## Tuner port behaviour
 
 | Moment | `127.0.0.1:4318` | `127.0.0.1:4319` |
 |---|---|---|
-| Main menu | LISTENING, full Lua tuner | not checked |
-| Load screen, waiting on BEGIN GAME (checked for 5+ min) | connection refused | LISTENING; accepted TCP but answered nothing (socket sat in CLOSE_WAIT) |
-| Map up, no clients connected, checked again 10 s later | LISTENING, full Lua tuner (99 states) | LISTENING; answers `APP:` with the game identity but `LSQ:` returns no states |
+| Main menu | LISTENING, full Lua tuner | LISTENING |
+| Load screen, up to and while BEGIN GAME waits | LISTENING, but nothing is served: TCP connects are accepted into the backlog and sit in CLOSE_WAIT, a handshake gets no reply. Task 1 saw outright refusals here after 5+ min, likely a full backlog | Task 1: accepted TCP but answered nothing |
+| Map up | LISTENING, full Lua tuner (99 to 124 states) | Task 1: answers `APP:` with the game identity but `LSQ:` returns no states |
+| Leaving a game (`ExitToMainMenu`) | One handshake got no reply mid-teardown; the next one, 4 s later, listed the main menu | not checked |
 
-So 4318 is the only port that serves Lua. During the load screen it refuses connections, and it comes back once the game starts. 4319 is a separate listener, not a fallback. Our own client was not holding 4318: it had closed at about 20:16:00, refusals continued until at least 20:21:44, and 4318 was listening again at 20:25:01, after BEGIN GAME. The server does not need port discovery, but it must treat refusals during loading as "wait and retry".
+So 4318 is the only port that serves Lua, and "port open" is not "ready": only a handshake that lists the expected states counts. After BEGIN GAME the stale backlog connections were cleared by the game and the tuner was not wedged. A second `LSQ:` on an open connection returns a fresh list (tag 4, same format as the handshake reply), which is how `GameConnection.query_states` resolves states by name.
 
-If the tuner refuses connections at the main menu or once the map is up, restart the game. Upstream also notes the game accepts only one tuner connection at a time (close FireTuner or test scripts before starting the server); this was not tested here.
+The game serves one tuner client at a time. The server's popup watcher reconnects about once a second while the game is at the main menu (it wants `InGame`; 22 connects in 25 s were logged). Cancelling it mid-handshake made the next connect fail once with `[WinError 64] The specified network name is no longer available`; `new_game` therefore pauses the background pollers, disconnects, and retries its first connect.
+
+If the tuner refuses connections at the main menu or once the map is up, restart the game. Upstream also notes the game accepts only one tuner connection at a time (close FireTuner or test scripts before starting the server).

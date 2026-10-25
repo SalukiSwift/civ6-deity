@@ -23,6 +23,37 @@ class LuaError(Exception):
     """Raised when Lua code execution returns an error."""
 
 
+class StateNotFound(LookupError):
+    """A named Lua state is not in the game's current state list."""
+
+
+# Present only while the main menu (shell) is loaded.
+FRONTEND_STATE = "FrontEnd"
+# The main menu screen's context. It includes PlayerSetupLogic/GameSetupLogic,
+# so BuildHeadlessGameSetup and friends exist here (they are nil in FrontEnd).
+# Play Now runs its setup in this context.
+MAIN_MENU_STATE = "MainMenu"
+
+
+def parse_state_list(items: list[str]) -> dict[int, str]:
+    """Parse an LSQ: reply (alternating index, name items) into index -> name."""
+    states: dict[int, str] = {}
+    i = 0
+    while i + 1 < len(items):
+        try:
+            states[int(items[i])] = items[i + 1]
+            i += 2
+        except ValueError:
+            i += 1
+    return states
+
+
+def find_state(states: dict[int, str], name: str) -> int | None:
+    """Lowest index whose state is called `name`, or None."""
+    hits = [idx for idx, n in states.items() if n == name]
+    return min(hits) if hits else None
+
+
 class GameConnection:
     """Persistent FireTuner TCP connection to Civ 6."""
 
@@ -57,23 +88,7 @@ class GameConnection:
         )
         log.info("Connected: %s", app_identity)
 
-        # Parse state list: alternating [index_number, state_name] pairs
-        self.lua_states = {}
-        self.gamecore_index = None
-        self.ingame_index = None
-        i = 0
-        while i + 1 < len(raw_states):
-            try:
-                idx = int(raw_states[i])
-                name = raw_states[i + 1]
-                self.lua_states[idx] = name
-                if name == "GameCore_Tuner" and self.gamecore_index is None:
-                    self.gamecore_index = idx
-                if name == "InGame" and self.ingame_index is None:
-                    self.ingame_index = idx
-                i += 2
-            except ValueError:
-                i += 1
+        self._set_states(parse_state_list(raw_states))
 
         log.info(
             "Discovered %d Lua states (GameCore=%s, InGame=%s)",
@@ -82,10 +97,81 @@ class GameConnection:
             self.ingame_index,
         )
 
+    def _set_states(self, states: dict[int, str]) -> None:
+        self.lua_states = states
+        self.gamecore_index = find_state(states, "GameCore_Tuner")
+        self.ingame_index = find_state(states, "InGame")
+
+    async def query_states(self, timeout: float = 5.0) -> dict[int, str]:
+        """Fresh state list from an LSQ: on the open connection.
+
+        Indexes renumber whenever states are created or destroyed, so callers
+        that target a state by name resolve it from this, not a cached list.
+        Raises ConnectionError when the game does not answer.
+        """
+        await self.ensure_connected()
+        async with self._lock:
+            assert self._reader is not None and self._writer is not None
+            await tuner_client.drain_messages(self._reader, timeout=0.1)
+            await tuner_client.send_message(
+                self._writer, tuner_client.TAG_HANDSHAKE, "LSQ:"
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while (remaining := deadline - loop.time()) > 0:
+                msg = await tuner_client.recv_message_timeout(
+                    self._reader, timeout=remaining
+                )
+                if msg is None:
+                    break
+                if msg.tag != tuner_client.TAG_HANDSHAKE:
+                    continue  # Lua output or an unsolicited push
+                states = parse_state_list(
+                    [s.strip() for s in msg.payload.split("\x00") if s.strip()]
+                )
+                if states:
+                    self._set_states(states)
+                    return states
+        raise ConnectionError("Civ 6 did not answer the state query (LSQ:)")
+
+    async def execute_once(
+        self, state_name: str, lua_code: str, timeout: float = 10.0
+    ) -> list[str]:
+        """Run Lua in the state called `state_name`, resolved at call time.
+
+        Never retries: for one-shot commands (host a game, leave a game)
+        where a resend after a dropped socket would act twice.
+        Raises StateNotFound when no such state is loaded.
+        """
+        idx = find_state(await self.query_states(), state_name)
+        if idx is None:
+            raise StateNotFound(f"No {state_name} Lua state is loaded.")
+        async with self._lock:
+            return await self._locked_execute(idx, lua_code, timeout)
+
+    async def execute_frontend(self, lua_code: str, timeout: float = 10.0) -> list[str]:
+        """Run Lua in the main menu's context, resolved by name at call time.
+
+        Requires the FrontEnd state (the game is at the main menu). Runs in
+        MainMenu, where the game-setup functions Play Now uses are defined
+        (FrontEnd itself lacks them). Never retries: a resend could host a
+        second game. Raises StateNotFound when not at the main menu.
+        """
+        states = await self.query_states()
+        if find_state(states, FRONTEND_STATE) is None:
+            raise StateNotFound(
+                "Not at the main menu (no FrontEnd state). "
+                "Quit to the main menu first."
+            )
+        return await self.execute_once(MAIN_MENU_STATE, lua_code, timeout)
+
     async def disconnect(self) -> None:
         if self._writer and not self._writer.is_closing():
             self._writer.close()
-            await self._writer.wait_closed()
+            try:
+                await self._writer.wait_closed()
+            except OSError:
+                pass  # the game already dropped it (e.g. leaving the menu)
         self._writer = None
         self._reader = None
 
