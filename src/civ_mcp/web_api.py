@@ -44,13 +44,14 @@ def create_app(gs: GameState, broadcast: Broadcast | None = None) -> FastAPI:
     async def broadcast_rows(after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)):
         bc = app.state.broadcast
         if bc is None:
-            return {"game": None, "rows": [], "next": after}
+            return {"game": None, "rows": [], "next": after, "count": 0}
         rows = bc.tail(after=after, limit=limit)
         gd = bc.game_dir
         return {
             "game": gd.name if gd else None,
             "rows": rows,
             "next": rows[-1]["i"] if rows else after,
+            "count": bc.count(),
         }
 
     @app.get("/api/board")

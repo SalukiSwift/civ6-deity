@@ -188,6 +188,13 @@ class Broadcast:
                 break
         return out
 
+    def count(self) -> int:
+        """Total rows in the current log."""
+        path = (self._game_dir or self.campaign_dir) / (
+            "log.jsonl" if self._game_dir is not None else "lobby.jsonl"
+        )
+        return len(self._read_rows(path))
+
     def _board_path(self) -> Path:
         base = self._game_dir if self._game_dir is not None else self.campaign_dir
         return base / "board.txt"

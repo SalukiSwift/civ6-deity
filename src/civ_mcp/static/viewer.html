@@ -43,12 +43,20 @@
     stick = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   });
 
+  var seen = false;
+  function resetLog() { next = 0; lastTurn = null; log.textContent = ""; stick = true; }
+
+  // Returns true when the game changed (the log was cleared and must be refetched).
   function setGame(g) {
-    if (g === game) return;
+    if (seen && g === game) return false;
+    var changed = seen;
+    seen = true;
     game = g;
     var name = g || "no game yet";
     document.title = "Civ VI Live Log - " + name;
     document.getElementById("head").textContent = "Civ VI Live Log - " + name;
+    if (changed) resetLog();
+    return changed;
   }
 
   function addRow(r) {
@@ -69,10 +77,11 @@
     log.appendChild(row);
   }
 
+  // Resolves true when the page was full, so the caller polls again at once.
   function pollLog() {
     return fetch("/api/broadcast?after=" + next).then(function (res) { return res.json(); }).then(function (d) {
-      setGame(d.game);
-      if (d.next < next) { next = 0; lastTurn = null; log.textContent = ""; return; }
+      if (setGame(d.game)) return true;
+      if (d.count < next) { resetLog(); return true; }
       if (d.rows.length) {
         var e = document.getElementById("empty");
         if (e) e.remove();
@@ -81,6 +90,7 @@
         if (stick) pane.scrollTop = pane.scrollHeight;
       }
       statusEl.textContent = "live, " + next + " entries";
+      return d.rows.length >= 200;
     });
   }
 
@@ -93,9 +103,10 @@
   }
 
   function tick() {
-    Promise.all([pollLog(), pollBoard()]).catch(function () {
+    Promise.all([pollLog(), pollBoard()]).then(function (r) { return r[0]; }, function () {
       statusEl.textContent = "disconnected, retrying";
-    }).then(function () { setTimeout(tick, 2000); });
+      return false;
+    }).then(function (again) { setTimeout(tick, again ? 0 : 2000); });
   }
   tick();
 })();

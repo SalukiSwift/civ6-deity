@@ -45,3 +45,16 @@ def test_board_endpoint(tmp_path):
     assert c.get("/api/board").json() == {"text": None}
     b.set_board("TURN 5")
     assert c.get("/api/board").json() == {"text": "TURN 5"}
+
+
+def test_broadcast_count_field(tmp_path):
+    b = Broadcast(tmp_path)
+    c = _client(b)
+    assert c.get("/api/broadcast").json()["count"] == 0
+    b.bind_game("x", "rome")
+    [b.append("plan", f"p{i}", turn=1) for i in range(4)]
+    r = c.get("/api/broadcast?after=4").json()
+    assert r["count"] == 4 and r["rows"] == [] and r["next"] == 4
+    b.bind_game("y", "egypt")
+    r = c.get("/api/broadcast?after=4").json()
+    assert r["count"] == 0 and r["game"] != "01-rome"
