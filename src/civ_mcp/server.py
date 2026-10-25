@@ -398,14 +398,30 @@ def _get_broadcast(ctx: Context) -> Broadcast:
 
 
 async def _bind_broadcast(ctx: Context) -> Broadcast:
-    """Return the broadcast log, binding it to the live game if not yet bound."""
+    """Return the broadcast log, bound to the live game.
+
+    Queries the game identity each time so a new game (e.g. after a loss)
+    rebinds to its own directory. Menu/no-connection states stay unbound.
+    """
     bc = _get_broadcast(ctx)
-    if bc.game_dir is None:
-        try:
-            civ, seed = await _get_game(ctx).get_game_identity()
-            bc.bind_game(hashlib.sha1(str(seed).encode()).hexdigest()[:10], civ)
-        except Exception:  # menu, lobby, or no connection: stay unbound
-            log.debug("Broadcast bind skipped", exc_info=True)
+    try:
+        civ, seed = await _get_game(ctx).get_game_identity()
+    except (ConnectionError, LuaError):
+        log.debug("Broadcast bind skipped (no game)", exc_info=True)
+        return bc
+    except Exception:
+        log.warning("Broadcast bind failed", exc_info=True)
+        return bc
+    try:
+        identity = hashlib.sha1(str(seed).encode()).hexdigest()[:10]
+        if bc.identity != identity:
+            was_bound = bc.game_dir is not None
+            civ = civ.lower().removeprefix("civilization_")
+            bc.bind_game(identity, civ)
+            if was_bound:
+                bc.append("game", f"new game detected: {civ}")
+    except Exception:
+        log.warning("Broadcast bind failed", exc_info=True)
     return bc
 
 
@@ -530,7 +546,7 @@ async def _logged(
                 turn=_get_game(ctx)._high_water_turn or None,
             )
         except Exception:
-            log.debug("Broadcast action log failed", exc_info=True)
+            log.warning("Broadcast action log failed", exc_info=True)
     try:
         await _get_spatial(ctx).record(tool_name, params, result, ms, tiles=tiles)
     except Exception:
@@ -1955,7 +1971,7 @@ async def end_turn(ctx: Context, summary: str) -> str:
         bc = await _bind_broadcast(ctx)
         bc.append("turn", summary.strip(), turn=gs._high_water_turn or None)
     except Exception:
-        log.debug("Broadcast turn log failed", exc_info=True)
+        log.warning("Broadcast turn log failed", exc_info=True)
 
     # Model ID comes from CIV_MCP_AGENT_MODEL env var (set by eval runner)
     env_model = os.environ.get("CIV_MCP_AGENT_MODEL", "")
@@ -2259,7 +2275,7 @@ async def end_turn(ctx: Context, summary: str) -> str:
                 turn=new_turn if m else (gs._high_water_turn or None),
             )
         except Exception:
-            log.debug("Broadcast event log failed", exc_info=True)
+            log.warning("Broadcast event log failed", exc_info=True)
         # Map capture — record terrain (first turn) + ownership delta
         if _diary_civ_type and _diary_seed:
             try:

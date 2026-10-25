@@ -77,6 +77,7 @@ class Broadcast:
     def __init__(self, campaign_dir: Path) -> None:
         self.campaign_dir = Path(campaign_dir)
         self._game_dir: Path | None = None
+        self.identity: str | None = None
         self._count = 0
         self._last_turn: int | None = None
 
@@ -110,6 +111,7 @@ class Broadcast:
             }
             meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         self._game_dir = d
+        self.identity = identity
         rows = self._read_rows(d / "log.jsonl")
         self._count = len(rows)
         self._last_turn = next(
