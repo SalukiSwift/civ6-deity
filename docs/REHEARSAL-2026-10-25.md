@@ -162,6 +162,76 @@ The early-game budget of 3 to 6 calls holds from turn 2 on. Turn 1 needs about 8
 
 Latency per tool over the session: `end_turn` 19.2 to 22.1 s (median about 20.5 s on turns 1 to 7), `get_situation` 4.2 to 4.6 s, `batch_orders` 0.6 to 7.1 s (36.7 s with the popup scan), `get_units` about 1.2 s, `get_game_overview` 1.0 to 1.7 s, `get_settle_advisor` 0.96 s, other reads 0.3 to 0.6 s, `narrate` 0.3 s, `launch_game` 22.8 s, `new_game` 64.8 s, `load_save_from_menu` 51.2 s, `restart_and_load` 159.3 s (failed). A quiet turn of the loop took about 25 s of tool time.
 
+## Fix wave (2026-10-25, after the rehearsal)
+
+Fixed on `deity-v1` after `5034b59`. Live checks ran in one throwaway Deity game (Sumeria, Gilgamesh, launched 23:37, `new_game` 52.6 s, turns 1 to 7, closed 23:56) driven with `scripts/mcp_drive.py`: a server with `CIV_MCP_DEV_LUA=1` for the diagnosis (D2, D4, D5), then a default server (81 tools, no `run_lua`) for the tool checks and D1. Unit tests: 305 passing (`tests/test_rehearsal_fixes.py` is new).
+
+### D1: fixed, verified live
+
+`load_save_from_menu` (and so `restart_and_load`, the connection-loss recovery, the hang recovery and `load_game_save`'s menu fallback) now waits for the main menu through the tuner before any OCR: a fresh state list with `FrontEnd` and `MainMenu`, polled every 5 s for up to 6 minutes (`game_launcher.wait_for_main_menu`). The server pauses its popup watcher, camera and watchdog around these calls, since the game serves one tuner client at a time. The "Single Player" OCR wait is now 120 s, a backstop. The port check after CONTINUE now polls for up to 60 s instead of reading once 3 s after the click.
+
+Live: game killed on turn 6 with `taskkill`, then `restart_and_load(reason="fix verification")`:
+
+```
+Kill: Game is not running. | Launch: Game launched. Process started after 2s, FireTuner port is open. | Load: Save loading (49s). Steps: Main menu up after 188s (tuner), Clicked Single Player, Clicked Load Game, Clicked Autosaves filter, Selected save AutoSave_0006, Clicked Load Game button, Clicked CONTINUE, FireTuner port open (0s after CONTINUE). Wait ~10s then use get_game_overview to verify.
+```
+
+263.5 s in all (call 23:51:16; process 23:51:19; port 23:51:35; menu states 23:54:43, about 3 min 26 s after launch; "Single Player" found by OCR 1.0 s later; CONTINUE clicked 23:55:29; returned 23:55:40). The log gained `- 23:55 [load] loaded latest autosave: fix verification` (also on `/api/broadcast` as `"kind":"load"`, turn 6) and `get_game_overview` read `Turn 6 | Sumeria (Gilgamesh) | Score: 11 | Deity`.
+
+### D2: fixed, verified live
+
+Cause confirmed with `run_lua` in InGame: `u:GetActivityType()` fails (`function expected instead of nil`) while `UnitManager.GetActivityType(u)` returns `1797587246` (`ActivityTypes.ACTIVITY_AWAKE`). The units query now reads the activity the way `WorldTracker.lua` and `UnitPanel.lua` do (sleep, hold, alert, heal; fortified = not awake and `GetFortifyTurns() > 0`), treats a unit with a queued destination (`UnitManager.GetQueuedDestination`) or automation as busy, and sends the activity as a new field. If the read fails the unit's activity is `?` and the query prints one `ACTERR|...` line, which the parser logs once as a warning. `get_units` shows `[fortified]`, `[sleeping]`, `[alert]`, `[healing]`, `[skipping turn]`, `[automated]` or `[moving to (x,y)]`.
+
+Live, turn 1, after `batch_orders` fortify (`#1 OK FORTIFIED`):
+
+```
+get_units:      Settler (UNIT_SETTLER) at (28,29) ... moves 2/2 [id:65536, idx:0]
+                Warrior (UNIT_WARRIOR) at (27,29) ... CS:20 moves 2/2 [fortified] [id:131073, idx:1]
+get_situation:  ATTENTION
+                  idle units: 65536
+```
+
+The settler, with no orders, stayed idle. Later, a scout given fortify showed `[alert]` (recon units cannot fortify).
+
+### D3: fixed, verified live
+
+`situation._unset` treats `nothing` (the cities query's empty queue) as unset. Live: after turn 1 -> 2 and again after turn 5 -> 6 (`>> Uruk finished building UNIT_SCOUT. Now: nothing.`) the board had `no production: Uruk`.
+
+### D4: fixed, verified live
+
+Higher Y is north. Evidence in game: `Map.GetAdjacentPlot(28, 29, DirectionTypes.DIRECTION_NORTHEAST)` is (29,30) and `DIRECTION_SOUTHWEST` is (28,28), so the engine's own compass puts +Y to the north. On screen (Windows-side screenshot after a move from (27,29) to (28,30) on the way to (29,31)): the warrior stood above Uruk (28,29), and the desert hills at (28,31) and (29,31) formed the top edge of the revealed land, above the city. Changes: PLAYBOOK rule 1 now reads "Higher Y is north (up the screen), X increases east"; `get_strategic_map` takes its rays and labels from one table, `lua/map.STRATEGIC_DIRECTIONS` (N is (0,+1), NE (+1,+1), SE (+1,-1), S (0,-1), SW (-1,-1), NW (-1,+1)); the move result's `dy` comment says north. No other code turns a dy into a compass word (the lost-contact fog directions use the engine's `DirectionTypes`, which are right). `docs/upstream-AGENTS.md` and `evals/` still say south and were left alone.
+
+### D5: not a path loss; the queued path runs when the turn ends
+
+Live with `run_lua` (`UnitManager.GetQueuedDestination`, `GetMovesRemaining`, `GetActivityType`) around a move of the warrior from (27,29) to (29,31):
+
+| Moment | Warrior | Moves | Activity | Queued |
+|---|---|---|---|---|
+| T1 after the order (`STOPPED_MID_PATH`) | (28,30) | 1 | OPERATION | (29,31) |
+| T2 start, after `end_turn` (and 10 s later) | (28,30) | 2 | OPERATION | (29,31) |
+| T3 start, after `end_turn` | (29,30) | 2 | OPERATION | (29,31) |
+| T4 start, after `end_turn` | (29,31), arrived | 2 | AWAKE | none |
+
+So the game keeps the path and moves the unit on along it when the turn ENDS, using that turn's moves; at the start of the next turn the unit is still where it stopped, with full moves and its path queued. The path survived two `end_turn`s, the post-move visibility query, and also a save and reload (after `restart_and_load` the warrior still showed `[moving to (26,30)]` and moved on at the end of turn 6). No blocker was raised for a moving unit (`ENDTURN_BLOCKING_*` count 0, `UI.CanEndTurn()` true, including with 0 moves left). In the rehearsal the units looked stuck because of D2 (they sat on the idle list) and the agent re-ordered them each turn.
+
+One real risk was found and closed: the stock `UNITOPERATION_SKIP_TURN` cancels a queued path (checked: queued (26,30) became none, activity HOLD). `skip_remaining_units`, its fortify/heal step and the `end_turn` units-blocker auto-skip now leave units with a queued destination alone. Live: `skip_remaining_units` with the warrior mid-path returned `SKIPPED|0 units` and the warrior kept `[moving to (26,30)]`. The move result now reads `STOPPED_MID_PATH (moves exhausted; the rest of the path runs when the turn ends)`, and PLAYBOOK mechanics rule 3 says so.
+
+### D6: unchanged
+
+The 30 s Phase 2 scan is upstream's: it visits every Lua state whose name contains Popup, Wonder, Moment, Era or Disaster. Narrowing it to the states the pre-check saw visible looks possible but needs a live exclusive popup to verify, so it was left as is.
+
+### D7: fixed, verified live
+
+`parse_deal_options_response` raises on an `ERR:` line, so the tool returns the game's reason. Live, nobody met: `get_trade_options(other_player_id=1)` returned `Error: NOT_MET|Have not met player 1`.
+
+### D8: fixed, verified live
+
+`Broadcast.event_text` logs the `== Events ==` and `== Action Required ==` blocks only, never anything from `== Situation ==` on, and `quiet turn` when neither block is there. Live log lines: `- 23:46 [event] quiet turn`, and on turn 6 `- 23:50 [event] >> Uruk finished building UNIT_SCOUT. Now: nothing. | -- New unit: Scout (UNIT_SCOUT) at (28,29). | -- Uruk grew to population 2. | * Choose Production  -> Use: set_city_production(...)`.
+
+### D11 (overview land total): fixed, verified live
+
+`get_game_overview` prints the share and our own count only: `Explored: 1% of land (28 land tiles revealed)`. FAIRNESS.md's `get_game_overview` row says so. The other D11 items, D9 and D10 are not in this wave.
+
 ## Clean-up done
 
 - Game closed with `taskkill` (twice: the crash test and the end). The server was shut down by closing stdin: no `python.exe` left and nothing listening on :8000.
