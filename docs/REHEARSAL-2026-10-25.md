@@ -1,0 +1,176 @@
+# Live rehearsal, 2026-10-25 (Task 12)
+
+A throwaway Deity game (Sumeria, Gilgamesh) played through the MCP tools on April's PC to exercise the whole loop before Task 13. Branch `deity-v1` at `f4755d1`. Tester only: no source changes.
+
+How it was driven: `scripts/mcp_drive.py` kept ONE server process (the `.mcp.json` command, Windows Python through WSL interop) alive for the whole session in `--follow` mode; each tool call was appended to `scripts/rehearsal/01-session.jsonl` with `mcp_drive.py send` and its result read back, with the latency of every step logged. The viewer endpoints were read from the Windows side with PowerShell, and the screen was checked with Windows-side screenshots (not kept).
+
+Timeline: game launched 22:58, `new_game` 23:01, turns 1 to 7 played 23:03 to 23:12, crash test 23:12 to 23:17 (back on turn 7), turn 7 played again and turn 8 started, game closed 23:20. 65 tool calls in the live session plus 5 offline.
+
+## Results
+
+| # | Item | Result | Evidence | Latency |
+|---|---|---|---|---|
+| 1 | `new_game(leader="LEADER_GILGAMESH", why="rehearsal")` | PASS | `Game started: LEADER_GILGAMESH, Deity, Fractal, Standard, Gathering Storm`. Server log: `click=ocr timings={'hosted': 2.4, 'click': 58.7, 'ingame': 62.0}`, verified `RULESET_EXPANSION_2`, `favor true`, `DIFFICULTY_DEITY` (game and player), `GAMESPEED_STANDARD`, `Fractal.lua`, `MAPSIZE_STANDARD`, grid `84x54`, turn 1. `campaign/games/01-sumeria/` created with `meta.json` (`"leader": "LEADER_GILGAMESH"`), `log.md`, `log.jsonl`; `index.json` `{"8bda726297": "01-sumeria"}`; `/api/broadcast` then reported `"game":"01-sumeria"`. | 64.8 s (BEGIN GAME click at 58.7 s, later than the ~40 s in RUNTIME.md) |
+| 2 | Viewer: `/api/board`, `/api/broadcast`, narrate visible within 3 s | PASS (endpoints) | Before the game: `{"text":null}`, `{"game":null,"rows":[],"next":0,"count":0}`, `/` 200. After `narrate(kind="plan", ...)`: a 200 ms poll loop found the row on its first poll, 0.4 s wall clock from the narrate return (`"kind":"plan","text":"Rehearsal turn 1: settle the capital in place, ...","i":2`). The page polls every 2 s when idle. The page itself on April's second monitor was not seen: Windows reported only one display (`\\.\DISPLAY1 2560x1440`). | narrate 0.29 to 0.49 s |
+| 3 | `get_situation` | PASS | Turn 1: 10 lines, sections `EMPIRE`, `ATTENTION`, `THREATS`, `RIVALS`; `idle units: 65536, 131073` and `research/civic not set`; no `(unavailable: ...)` marker all session. | 4.2 to 4.6 s |
+| 4 | `get_units`, `get_cities`, `get_map_area`, fog, unrevealed | PASS | Units and city sane (`Uruk (pop 1) at (59,35)`, `[id:65536]`). Radius 4 around Uruk on turn 2: revealed-not-visible tiles read `(60,32): PLAINS JUNGLE (fog; last seen T1) [mv:2]`, `(56,35): COAST [FISH] (fog; last seen T1)`, with no yields and no owner, while visible tiles carry yields and `(owned by Sumeria)`. Unrevealed areas: `get_map_area(45,25,2)` and `(40,45,1)` returned `No tiles.`; radius 3 on turn 1 returned 32 of 37 tiles (unrevealed ones left out). | 0.30 to 0.53 s |
+| 5 | `batch_orders` with three orders, camera hops | PASS | `#1 OK FOUNDED\|59,35`, `#2 OK MOVING_TO\|62,36\|from:59,36\|now_at:60,36\|...`, `#3 OK RESEARCHING\|TECH_POTTERY`; each order logged as its own `action` entry with its own `why`. Camera, by screenshot: parked over unrevealed ground by `get_map_area(40,45)`, then a batch move to (60,30) brought it back centred on the target, south of Uruk. Only move and attack orders hop the camera (by design); `found_city` and research do not. | 36.7 s (see D6); later batches 0.6 to 7.1 s |
+| 6 | `end_turn(summary=...)` | PASS | `Turn 1 -> 2 \| Score: 8` followed by `== Situation ==` and the board. `0_MCP_0002.Civ6Save` written at 23:06:10, in `Saves\Single` (not `Saves\Single\auto`, which holds the game's own `AutoSave_0002`); one `0_MCP_NNNN` per turn after that up to `0_MCP_0008`. The broadcast gained the `turn` entry (the summary) and an `event` entry, and `/api/board` returned the new board. | 19.2 to 22.1 s (7 calls) |
+| 7a | Five turns through the loop, production and research | PASS | Turns 1 to 7 played (plus turn 7 again after the reload). Production `UNIT_SCOUT` (`OK PRODUCING\|UNIT_SCOUT\|5 turns`; built on turn 5) and `BUILDING_MONUMENT`; research `TECH_POTTERY`. Calls per turn below. | loop: narrate 0.3 s, batch about 2.5 s, end_turn about 20 s |
+| 7b | Fortify, then `is_busy` keeps it off the idle list | FAIL | See D2. | |
+| 7c | `promote_unit` | NOT REACHED | No unit had XP. The refusal path ran cleanly: `Error: CANNOT_PROMOTE\|The game does not offer this promotion now (...)`; `get_unit_promotions`: `No promotions available for UNIT_WARRIOR (id:1).` | 0.9 s |
+| 8a | Units query `is_busy` | FAIL | See D2. | |
+| 8b | Settle advisor (`Terrain_YieldChanges` / `Feature_YieldChanges`) | PASS | `get_settle_advisor(65536)`: `Top 5 settle locations:`, #1 (59,35) score 164; `get_global_settle_advisor`: `Top 10 settle locations:`. No Lua error. | 0.96 s / 0.30 s |
+| 8c | `get_victory_progress`, `get_diplomacy` | PASS | Both ran without error. Victory: `RIVALS (World Rankings)` shows only our own row (`Sumeria: 1 cities \| Techs 0 \| Tourism 0 \| Mil 21`); no `DEMOGRAPHICS` section. Diplomacy: `7 civilizations:`, each `Unmet Civilization (Unknown Leader) ... not met`. | 0.59 s / 0.30 s |
+| 8d | Cities query in InGame with `PlayersVisibility[...]:IsVisible` | PASS | `get_cities` ran 7 times in InGame without a Lua error, before and after the city was founded, so `local pVis = PlayersVisibility[me]` resolves there. The `pVis:IsVisible(...)` call itself sits in the ranged-target scan, which runs only for a city with walls; Uruk had none, so that line was not executed. Still to check once a city has walls. | 0.29 to 0.59 s |
+| 8e | `get_trade_options`, `propose_trade` | NOT REACHED | No civ met (only the city-state Mitla). An unmet-civ probe showed the HasMet gate holds but its error is swallowed: D7. | 0.35 s |
+| 9 | Crash recovery: `taskkill`, then `restart_and_load(reason="rehearsal crash test")` | FAIL | `Kill: Game is not running. \| Launch: Game launched. Process started after 2s, FireTuner port is open. \| Load: FAILED: Could not find 'Single Player' on main menu. Is the game at the main menu?` See D1. Recovered by hand with `load_save_from_menu(reason=...)` once the menu was up: `Save loading (51s). Steps: Clicked Single Player, Clicked Load Game, Clicked Autosaves filter, Selected save AutoSave_0007, Clicked Load Game button, Clicked CONTINUE, WARNING: FireTuner port not open after load.` Then the `load` entry was in the log and on `/api/broadcast` (`"kind":"load","text":"loaded latest autosave: rehearsal crash test: ..."`), and `get_game_overview` read `Turn 7 \| Sumeria (Gilgamesh) \| Score: 8 \| Deity`. Turn 7 then ended normally (`Turn 7 -> 8`), with no turn-regression warning. | restart_and_load 159.3 s (failed); load_save_from_menu 51.2 s |
+| 10 | `run_lua` absent, `read_notebook`, empty load reason | PASS | `tools/list`: 81 tools, no `run_lua`. `read_notebook` returned `# Campaign notebook` with its three sections. `load_game_save(reason="")`, `load_game_save(reason="   ")` and `restart_and_load(reason="")` each returned `Error: a non-empty \`reason\` is required for every load. ...`. While the game was down, `get_game_overview` answered `Cannot connect to Civ 6 at 127.0.0.1:4318. Is the game running with EnableTuner=1?` in 2 s. | under 0.01 s |
+| 11 | Fairness spot-check | PASS | `get_diplomacy` names no civ (7 unmet rows); `get_game_overview` names only Sumeria; `get_victory_progress` has no rival rows and no rival yields. Minor: the overview's `Explored: 1% of land (22/1627 tiles)` gives the total land-tile count of the map, which the game does not show a human (D11). | |
+
+Totals over the 17 rows: 12 PASS, 3 FAIL (7b, 8a, 9; 7b and 8a are the same defect, D2), 2 NOT REACHED (7c, 8e).
+
+## Defects
+
+Ordered by severity. Each one goes back to an implementer before Task 13.
+
+### D1 (high): `restart_and_load` gives up during the intro movie
+
+The game plays its intro movies on every launch. On this PC the main menu appeared about 3 min 45 s after launch (launched 23:12:38; intro still playing at 23:15:25; menu up by 23:16:25; on the first launch of the session the intro was playing 23 s in, the title card was still up at 3 min 19 s and the menu was up at about 3 min 35 s). `restart_and_load` waits for the tuner port (open about 20 s after launch), then the OCR step waits only 90 s for "Single Player":
+
+```
+[1/7] Waiting for main menu (Single Player)...
+WARNING _wait_for_text: 'Single Player' not found after 91s. Saw 1 items: '66 FPS'
+```
+
+So the load step fails every time on this machine, and the tool returns `... | Load: FAILED: Could not find 'Single Player' on main menu. Is the game at the main menu?` after 159 s with the game left at the main menu. Recovery then needs a second call (`load_save_from_menu`, which worked) that the playbook does not mention. No `load` entry is written for the failed attempt (correct by FAIRNESS.md).
+
+Candidate fixes: before the OCR navigation, wait for the `FrontEnd` and `MainMenu` Lua states through the tuner (RUNTIME.md already uses them as the "at the main menu" signal) with a 5-minute budget, or raise the "Single Player" wait to at least 300 s; skipping the intro (a click or key once the window is in front) would also save about 3 minutes per recovery. If an AppOptions setting can turn the intro off, that is April's call (her game files are not edited by agents).
+
+Also seen in this step: `load_save_from_menu` reported `WARNING: FireTuner port not open after load`, yet `get_game_overview` worked 5 s later. The warning is spurious or its wait is too short.
+
+### D2 (high): fortified units are never busy, so the idle list never shrinks
+
+After `batch_orders` fortify on turn 3 (`#1 OK FORTIFIED`), the game shows the unit fortified (the turn button reads NEXT TURN, no unit needs orders), but:
+
+```
+get_units:      Warrior (UNIT_WARRIOR) at (61,36) ... CS:20 moves 2/2 [id:131073, idx:1]
+get_situation:  ATTENTION
+                  idle units: 131073
+```
+
+and the same again on turn 4 after `end_turn`. `get_units` has no fortified marker either. In `lua/units.py` (units query) the busy flag is:
+
+```lua
+pcall(function()
+    local act = u:GetActivityType()
+    if act ~= nil and act ~= ActivityTypes.ACTIVITY_AWAKE then busy = "1" end
+    if u.IsAutomated and u:IsAutomated() then busy = "1" end
+end)
+```
+
+Likely cause (not verified, since `run_lua` is off in a fair run): this query runs in InGame, where the activity is read with `UnitManager.GetActivityType(pUnit)` (as the game's own unit panel and flag scripts do), not a `GetActivityType` method on the unit, so the call errors, the `pcall` swallows it and `busy` stays `"0"`. An implementer should check it with `CIV_MCP_DEV_LUA=1` against a fortified unit. Impact: every fortified or garrisoned unit shows as idle on every board, so the ATTENTION section fills with noise as the army grows and the agent spends calls on units that need nothing.
+
+### D3 (medium): the board does not flag a city with no production
+
+On turn 6 `end_turn` reported `>> Uruk finished building UNIT_SCOUT. Now: nothing.` and `* Choose Production`, and `get_cities` showed `Building: nothing`, but the board's ATTENTION had only `idle units: 196608, 131073`. The cities query returns `"nothing"` for an empty queue (`lua/cities.py`, `local producing = "nothing"`), while `situation._unset` only treats `""` and `"NONE"` as unset, so the `no production: <city>` line can never appear. `narrate.py` already handles both (`not in ("NONE", "nothing")`).
+
+### D4 (medium): north and south are swapped in the playbook and in `get_strategic_map`
+
+PLAYBOOK.md rule 1 ("Higher Y is south") and `docs/upstream-AGENTS.md` ("Y increases -> south (down)") disagree with the screen. On screen, higher Y is north:
+
+- Map data: the coast tiles (59,37), (59,38), (58,36) and the reef at (60,38) are on the water that lies above Uruk (59,35) on screen; the jungle, sheep hills and mountain at (60,32), (59,33), (61,32) lie below it.
+- Camera: `get_map_area(45,25)` (lower Y) moved the view so the island sat at the top right, that is the camera went down and left of it; `get_map_area(40,45)` (higher Y) left the island at the bottom right, so the camera went up and left; the move to (60,30) centred the view below Uruk.
+
+`get_strategic_map` uses the same flipped convention (`lua/map.py`: `-- Directions: N(0,-1), ...`), so its `Uruk (59,35): N:7 NE:4 SE:5 S:4 SW:3 NW:3 <- EXPLORE NE/SE/S/SW/NW!` has N and S (and each diagonal's north or south half) reversed. Coordinates are unaffected and the agent's reasoning stays self-consistent, but every compass word in the log and the viewer will contradict what April sees on screen. Fix the playbook rule and the strategic map's labels together, and check any other narration that names directions.
+
+### D5 (medium): multi-turn moves do not continue the next turn
+
+Four times a unit stopped mid-path with `STOPPED_MID_PATH (moves exhausted)` and was found at the start of the next turn on the same tile with full moves and no path: warrior turn 1 to 2 (`now_at:60,36`, target (62,36)), turn 4 to 5 (`now_at:62,36`, target (62,37)); scout turn 6 to 7 (`now_at:60,33`, target (60,32)) and turn 7 to 8 (`now_at:60,32`, target (60,31)). In the normal game a unit given a multi-turn move keeps going at the start of the next turn. The move Lua is a plain `UnitManager.RequestOperation(unit, UnitOperationTypes.MOVE_TO, params)`; the cause was not found from the logs (INFO level shows nothing between the turn's orders and the next turn). A candidate to check: whether anything in `end_turn` (for example the stock Skip Turn it issues when the game reports `ENDTURN_BLOCKING_UNITS`) or the turn hand-off clears the queued path. Impact: one extra order per moving unit per turn, and those units sit on the idle list.
+
+### D6 (medium): `batch_orders` with `found_city` took 36.7 s
+
+```
+23:04:43 INFO ExclusivePopup visible - running Phase 2 state scan
+23:04:44 INFO ExclusivePopup visible - running Phase 2 state scan
+23:05:16 INFO [T?] batch_orders(why=rehearsal turn 1 count=3) OK 36719ms
+```
+
+Founding the first city raises an exclusive popup and the upstream Phase 2 scan walks every popup Lua state (about 30 s). Other batches took 0.6 to 7.1 s. Expect the same cost at each wonder, era change or other exclusive popup. Also note the `[T?]` turn tag in that log line.
+
+### D7 (low): `get_trade_options` on an unmet civ prints an empty deal screen
+
+`get_trade_options(other_player_id=1)` with nobody met:
+
+```
+Trade options with  (player 0):
+
+Economy:
+  Our gold: 0 (+0/turn) | Favor: 0
+  Their gold (deal screen): 0 (+0/turn) | Favor: 0
+
+Agreements:
+  Open borders: not active (available)
+  Alliance: not eligible (requires declared friendship + Diplomatic Service civic)
+```
+
+We had 25 gold at the time. The Lua bails correctly with `ERR:NOT_MET|Have not met player 1` (so no rival data leaks), but `parse_deal_options_response` ignores `ERR:` lines and the narration prints a default, wrong deal screen. It should return the error.
+
+### D8 (low): quiet-turn `event` entries copy the whole board into the log
+
+When a turn report has no `== Events ==` block, `Broadcast.event_text` falls back to the first 15 lines, which now include the appended board:
+
+```
+- 23:06 [event] Turn 1 -> 2 | Score: 8 | == Situation == | EMPIRE | T2 Ancient Era | Sumeria (Gilgamesh) | score 8 | ... | RIVALS | none
+```
+
+This repeats every quiet turn in `log.md` and the viewer. The board is already in `board.txt` and `/api/board`; the fallback should stop at `== Situation ==`.
+
+### D9 (low): "Needs builder" list is split on the coordinate commas
+
+`get_cities`: `Needs builder: WHEAT, 35, WINE, 36 (unimproved)`. The Lua builds entries like `WHEAT@60,35` and joins them with `,` (`lua/cities.py` lines 122 and 164); the parser splits on `,` (line 724) and the narration keeps the part before `@`. Use another separator.
+
+### D10 (low): the board's idle list has ids only
+
+`idle units: 196608, 131073` gives no unit type or position, so on most turns the agent needed a `get_units` call just to know where its units were. Something like `Scout 196608 (60,33), Warrior 131073 (62,37)` would save a call per turn.
+
+### D11 (low): smaller items
+
+- A move into water returns `OK MOVING_TO|63,38|from:62,36|now_at:62,36|BLOCKED (water tile - land units need Shipbuilding tech to embark)`: it starts with `OK`, counts as OK in the batch and hops the camera.
+- Action lines in `log.md` carry raw result codes (`=> OK MOVING_TO|62,36|from:59,36|now_at:60,36|(moved dx:+1 dy:+0)|STOPPED_MID_PATH (moves exhausted)`), which a Civ player watching the log cannot read easily (PLAYBOOK asks for plain Civ terms). The found-city line also names the unit by index (`unit_action found_city #0`).
+- The `load` entry says `loaded latest autosave` rather than the save that was loaded (`AutoSave_0007`).
+- `get_city_states` lists `Free Cities (Unknown) ... 0 envoys [player 62]` as a known city-state.
+- `get_game_overview` prints `Explored: 1% of land (22/1627 tiles)`: the total land-tile count of the map is not something the game shows a human (small fairness leak; a percentage of the revealed tiles only, or no denominator, would avoid it).
+- `0_MCP_NNNN` saves are written to `Saves\Single`, next to April's own named saves, not to `Saves\Single\auto` as the checklist assumed. Not wrong, but the docs should say where they go.
+- `sleep` on a Warrior returns `FAIL Error: CANNOT_SLEEP|Unit cannot sleep`. That is the game's rule (melee units fortify instead), so not a defect, but the batch docstring lists `sleep` among the generic unit actions.
+
+## Tool calls per turn
+
+Counted from `scripts/rehearsal/01-session.jsonl`. "Used" includes tester-only checks; "needed" is what the turn loop itself took.
+
+| Turn | Used | Needed | What the needed calls were |
+|---|---|---|---|
+| 1 | 15 | 8 | get_situation, get_units (positions), get_settle_advisor, narrate, batch_orders (found, move, research), get_cities (the new city's id), batch_orders (production), end_turn |
+| 2 | 5 | 4 | get_units (where did the warrior stop), narrate, batch_orders, end_turn |
+| 3 | 8 | 3 | narrate, batch_orders (fortify), end_turn |
+| 4 | 7 | 3 | narrate, batch_orders, end_turn |
+| 5 | 5 | 4 | get_units, narrate, batch_orders, end_turn |
+| 6 | 5 | 5 | get_units (new scout id), get_cities (empty queue, see D3), narrate, batch_orders, end_turn |
+| 7 (after reload) | 6 | 4 | get_game_overview (check the reload), narrate, batch_orders, end_turn |
+
+The early-game budget of 3 to 6 calls holds from turn 2 on. Turn 1 needs about 8 because the city id only exists after `found_city`, so production cannot go in the same batch. D2, D3, D5 and D10 each add calls; fixing them would bring a typical early turn to 3.
+
+Latency per tool over the session: `end_turn` 19.2 to 22.1 s (median about 20.5 s on turns 1 to 7), `get_situation` 4.2 to 4.6 s, `batch_orders` 0.6 to 7.1 s (36.7 s with the popup scan), `get_units` about 1.2 s, `get_game_overview` 1.0 to 1.7 s, `get_settle_advisor` 0.96 s, other reads 0.3 to 0.6 s, `narrate` 0.3 s, `launch_game` 22.8 s, `new_game` 64.8 s, `load_save_from_menu` 51.2 s, `restart_and_load` 159.3 s (failed). A quiet turn of the loop took about 25 s of tool time.
+
+## Clean-up done
+
+- Game closed with `taskkill` (twice: the crash test and the end). The server was shut down by closing stdin: no `python.exe` left and nothing listening on :8000.
+- Deleted `campaign/games/01-sumeria/` and its index entry. It was the only entry, so `index.json` and the then-empty `campaign/games/` went too; `campaign/lobby.md` and `campaign/lobby.jsonl` deleted. `campaign/NOTEBOOK.md` is unchanged.
+- Deleted this run's upstream diary files in `%USERPROFILE%\.civ6-mcp` (the four `*_8bda726297_*` files) and the tester's helper scripts in `%TEMP%`. Earlier tasks' files there were left alone.
+- Autosaves left alone: `0_MCP_0002` to `0_MCP_0008` in `Saves\Single`, `AutoSave_0001` to `AutoSave_0008` in `Saves\Single\auto`.
+
+## Files
+
+- `scripts/mcp_drive.py`: one-server MCP driver (`run` a JSONL script, `--follow` to keep the server up, `send` to add a step and wait for its result; per-step latency in `OUT.timings.jsonl`).
+- `scripts/rehearsal/00-offline.jsonl`: checks that need no game (tool list, notebook, empty load reasons).
+- `scripts/rehearsal/01-session.jsonl`: the live session exactly as sent.

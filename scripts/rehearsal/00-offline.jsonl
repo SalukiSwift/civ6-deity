@@ -1,0 +1,7 @@
+# Rehearsal 2026-10-25, offline checks (game not needed): tool list, notebook, empty load reasons refused.
+# Run: python3 scripts/mcp_drive.py run scripts/rehearsal/00-offline.jsonl
+{"id": "tools", "list_tools": true}
+{"id": "notebook", "tool": "read_notebook", "args": {}}
+{"id": "load_empty_reason", "tool": "load_game_save", "args": {"save_name": "0_MCP_0001", "reason": ""}}
+{"id": "load_blank_reason", "tool": "load_game_save", "args": {"save_name": "0_MCP_0001", "reason": "   "}}
+{"id": "restart_empty_reason", "tool": "restart_and_load", "args": {"reason": ""}}

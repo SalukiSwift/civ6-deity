@@ -1,0 +1,75 @@
+# Rehearsal 2026-10-25, the live session as sent (one server, --follow mode, steps appended by `mcp_drive.py send`).
+# Unit and city ids belong to that throwaway game (random map), so this is a record, not a replayable script.
+# Findings: docs/REHEARSAL-2026-10-25.md
+{"id": "launch1", "tool": "launch_game", "args": {}}
+{"id": "wait_menu1", "sleep": 150}
+{"id": "newgame1", "tool": "new_game", "args": {"leader": "LEADER_GILGAMESH", "why": "rehearsal"}}
+{"id": "narr1", "tool": "narrate", "args": {"kind": "plan", "text": "Rehearsal turn 1: settle the capital in place, scout with the warrior, start Pottery research."}}
+{"id": "sit1", "tool": "get_situation", "args": {}}
+{"id": "units1", "tool": "get_units", "args": {}}
+{"id": "cities1", "tool": "get_cities", "args": {}}
+{"id": "map1", "tool": "get_map_area", "args": {"center_x": 59, "center_y": 35, "radius": 3}}
+{"id": "settle1", "tool": "get_settle_advisor", "args": {"unit_id": 65536}}
+{"id": "gsettle1", "tool": "get_global_settle_advisor", "args": {}}
+{"id": "path1", "tool": "get_pathing_estimate", "args": {"unit_id": 131073, "target_x": 62, "target_y": 36}}
+{"id": "map_unrev", "tool": "get_map_area", "args": {"center_x": 45, "center_y": 25, "radius": 2}}
+{"id": "batch1", "tool": "batch_orders", "args": {"why": "rehearsal turn 1", "orders": [{"unit_id": 65536, "action": "found_city", "why": "settle in place on the river hill, best site per the advisor"}, {"unit_id": 131073, "action": "move", "x": 62, "y": 36, "why": "scout east toward the hills"}, {"research": "TECH_POTTERY", "why": "granary and farms later"}]}}
+{"id": "cities2", "tool": "get_cities", "args": {}}
+{"id": "units2", "tool": "get_units", "args": {}}
+{"id": "batch1b", "tool": "batch_orders", "args": {"why": "rehearsal turn 1 production", "orders": [{"city_id": 65536, "production": "UNIT_SCOUT", "why": "find neighbours and huts early"}]}}
+{"id": "sit1b", "tool": "get_situation", "args": {}}
+{"id": "end1", "tool": "end_turn", "args": {"summary": "Founded Uruk on the river hill, warrior scouting east, Pottery and a scout queued."}}
+{"id": "units3", "tool": "get_units", "args": {}}
+{"id": "narr2", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 2: warrior keeps scouting east to the hills at (62,36); Uruk stays on the scout."}}
+{"id": "batch2", "tool": "batch_orders", "args": {"why": "rehearsal turn 2", "orders": [{"unit_id": 131073, "action": "move", "x": 62, "y": 36, "why": "scout east toward the hills"}]}}
+{"id": "map_fog1", "tool": "get_map_area", "args": {"center_x": 59, "center_y": 35, "radius": 4}}
+{"id": "end2", "tool": "end_turn", "args": {"summary": "Warrior pushed one tile east into the forest at (61,36); scout still building."}}
+{"id": "narr3", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 3: hold the warrior in the forest east of Uruk, fortified, as a picket until the scout is out."}}
+{"id": "batch3", "tool": "batch_orders", "args": {"why": "rehearsal turn 3", "orders": [{"unit_id": 131073, "action": "fortify", "why": "picket in the forest east of Uruk"}]}}
+{"id": "units4", "tool": "get_units", "args": {}}
+{"id": "sit3", "tool": "get_situation", "args": {}}
+{"id": "vic1", "tool": "get_victory_progress", "args": {}}
+{"id": "dip1", "tool": "get_diplomacy", "args": {}}
+{"id": "ov1", "tool": "get_game_overview", "args": {}}
+{"id": "end3", "tool": "end_turn", "args": {"summary": "Warrior fortified in the forest east of Uruk as a picket; scout and Pottery continue."}}
+{"id": "trade_unmet", "tool": "get_trade_options", "args": {"other_player_id": 1}}
+{"id": "tech1", "tool": "get_tech_civics", "args": {}}
+{"id": "notif1", "tool": "get_notifications", "args": {}}
+{"id": "promos1", "tool": "get_unit_promotions", "args": {"unit_id": 131073}}
+{"id": "narr4", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 4: the river flooded near Uruk; nothing threatens yet, so the warrior leaves its picket to look over the hills at (62,37)."}}
+{"id": "batch4", "tool": "batch_orders", "args": {"why": "rehearsal turn 4", "orders": [{"unit_id": 131073, "action": "move", "x": 62, "y": 37, "why": "look over the coastal hills"}]}}
+{"id": "end4", "tool": "end_turn", "args": {"summary": "Warrior up onto the coastal hills to scout; Uruk on the scout, Pottery researching."}}
+{"id": "units5", "tool": "get_units", "args": {}}
+{"id": "cities5", "tool": "get_cities", "args": {}}
+{"id": "narr5", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 5: the warrior stopped on the hills at (62,36), so it steps down to the coast at (62,37); the scout finishes next turn."}}
+{"id": "batch5", "tool": "batch_orders", "args": {"why": "rehearsal turn 5", "orders": [{"unit_id": 131073, "action": "move", "x": 63, "y": 38, "why": "follow the coast north-east"}]}}
+{"id": "end5", "tool": "end_turn", "args": {"summary": "Warrior following the coast; scout due next turn in Uruk."}}
+{"id": "cities6", "tool": "get_cities", "args": {}}
+{"id": "units6", "tool": "get_units", "args": {}}
+{"id": "narr6", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 6: the scout is out and heads south into the jungle at (60,32); Uruk builds a monument for early culture; the warrior climbs to the coastal hills at (62,37)."}}
+{"id": "batch6", "tool": "batch_orders", "args": {"why": "rehearsal turn 6", "orders": [{"city_id": 65536, "production": "BUILDING_MONUMENT", "why": "early culture"}, {"unit_id": 196608, "action": "move", "x": 60, "y": 32, "why": "explore south"}, {"unit_id": 131073, "action": "move", "x": 62, "y": 37, "why": "coastal hills lookout"}]}}
+{"id": "end6", "tool": "end_turn", "args": {"summary": "Scout out exploring south, warrior on the coastal hills, monument started."}}
+{"id": "units7", "tool": "get_units", "args": {}}
+{"id": "cs1", "tool": "get_city_states", "args": {}}
+{"id": "dip2", "tool": "get_diplomacy", "args": {}}
+{"id": "crash_kill", "shell": "cd /mnt/c && taskkill.exe /IM CivilizationVI_DX12.exe /F", "timeout": 60}
+{"id": "ov_dead", "tool": "get_game_overview", "args": {}, "timeout": 240}
+{"id": "restart1", "tool": "restart_and_load", "args": {"reason": "rehearsal crash test"}}
+{"id": "wait_menu2", "sleep": 45}
+{"id": "menuload1", "tool": "load_save_from_menu", "args": {"reason": "rehearsal crash test: restart_and_load timed out waiting for the main menu during the intro movie; game now at the main menu"}}
+{"id": "ov_after_load", "tool": "get_game_overview", "args": {}}
+{"id": "sit7", "tool": "get_situation", "args": {}}
+{"id": "narr7", "tool": "narrate", "args": {"kind": "plan", "text": "Turn 7, back after the crash test: the scout carries on south to the jungle at (60,32), the warrior sleeps on the coastal hills."}}
+{"id": "batch7", "tool": "batch_orders", "args": {"why": "rehearsal turn 7", "orders": [{"unit_id": 196608, "action": "move", "x": 60, "y": 31, "why": "explore south"}, {"unit_id": 131073, "action": "sleep", "why": "watch the coast"}]}}
+{"id": "sit7b", "tool": "get_situation", "args": {}}
+{"id": "end7", "tool": "end_turn", "args": {"summary": "Recovered from the crash test at turn 7; scout exploring south, warrior asleep on the coast."}}
+{"id": "promote_try", "tool": "promote_unit", "args": {"unit_id": 131073, "promotion_type": "PROMOTION_BATTLECRY", "why": "rehearsal: check the refusal path, the warrior has no XP"}}
+{"id": "units8", "tool": "get_units", "args": {}}
+{"id": "map_far2", "tool": "get_map_area", "args": {"center_x": 40, "center_y": 45, "radius": 1}}
+{"id": "wait_cam", "sleep": 3}
+{"id": "batch8", "tool": "batch_orders", "args": {"why": "rehearsal turn 8 camera check", "orders": [{"unit_id": 196608, "action": "move", "x": 60, "y": 30, "why": "explore south"}]}}
+{"id": "wait_cam2", "sleep": 3}
+{"id": "cities8", "tool": "get_cities", "args": {}}
+{"id": "strat8", "tool": "get_strategic_map", "args": {}}
+{"id": "close_game", "shell": "cd /mnt/c && taskkill.exe /IM CivilizationVI_DX12.exe /F", "timeout": 60}
+{"id": "quit", "quit": true}
