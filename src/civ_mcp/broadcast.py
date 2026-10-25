@@ -80,6 +80,8 @@ class Broadcast:
         self.identity: str | None = None
         self._count = 0
         self._last_turn: int | None = None
+        # Leader chosen by new_game; recorded by the first bind_game after it.
+        self.pending_leader: str | None = None
 
     @property
     def game_dir(self) -> Path | None:
@@ -88,6 +90,9 @@ class Broadcast:
     # -- binding ---------------------------------------------------------
 
     def bind_game(self, identity: str, civ: str, leader: str = "") -> Path:
+        if not leader and self.pending_leader:
+            leader = self.pending_leader
+        self.pending_leader = None
         games = self.campaign_dir / "games"
         games.mkdir(parents=True, exist_ok=True)
         index_path = games / "index.json"

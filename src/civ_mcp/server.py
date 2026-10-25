@@ -21,6 +21,7 @@ import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
+from civ_mcp.newgame import GAME_SETTINGS, settings_card, valid_leader
 from civ_mcp.broadcast import (
     ACTION_TOOLS,
     KINDS,
@@ -3163,6 +3164,37 @@ async def load_save_from_menu(
     if _launcher_load_ok(result):
         _get_game(ctx).record_load(save_name or "latest autosave", reason)
     return result
+
+
+@mcp.tool(annotations={"destructiveHint": True})
+async def new_game(ctx: Context, leader: str, why: str) -> str:
+    """Prepare the fixed new game (Deity, Fractal, Standard size and speed).
+
+    Args:
+        leader: A LEADER_* name from docs/leaders.txt, e.g. LEADER_GILGAMESH.
+        why: Required. Why you chose this leader (logged publicly).
+
+    Returns the settings card. Create the game from the main menu with those
+    settings, then call get_game_overview.
+    """
+    if not valid_leader(leader):
+        return (
+            f"Error: unknown leader {leader!r}. Check docs/leaders.txt for the "
+            "valid LEADER_* names."
+        )
+    if (err := _require_reason(why)) is not None:
+        return err
+    bc = _get_broadcast(ctx)
+    bc.pending_leader = leader
+    bc.append(
+        "game",
+        f"new game: {leader} ({why.strip()})",
+        meta={**GAME_SETTINGS, "leader": leader},
+    )
+    return (
+        settings_card(leader)
+        + "\n\nCreate this game from the main menu, then call get_game_overview."
+    )
 
 
 @mcp.tool(annotations={"destructiveHint": True})
