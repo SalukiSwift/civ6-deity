@@ -12,6 +12,7 @@ import asyncio
 import logging
 import re
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
@@ -58,6 +59,8 @@ class GameState:
         # (ts, turn, save_name) for each successful save load — used to detect
         # save scumming in _check_save_scumming(). Bounded to last 50 entries.
         self._save_load_history: list[tuple[float, int, str]] = []
+        # Set by the server: (save_name, reason) -> broadcast a "load" entry.
+        self.on_load: Callable[[str, str], None] | None = None
         self._run_aborted: bool = False  # set when save scumming threshold is exceeded
         # Per-turn advisor call budget — prevents compulsive advisor loops
         # (e.g. Gemini Pro's 1,567 get_wonder_advisor calls in a single turn).
@@ -466,6 +469,11 @@ class GameState:
                 )
             except Exception:
                 followup = []
+            if "UNSEEN" in followup:
+                return (
+                    result
+                    + "\n  Post-combat: target tile no longer visible; outcome unknown"
+                )
             try:
                 followup_str = _format_attack_followup(followup)
                 post_hp = _extract_post_hp(followup)
@@ -569,7 +577,7 @@ class GameState:
 
     async def skip_unit(self, unit_index: int) -> str:
         lua = lq.build_skip_unit(unit_index)
-        lines = await self.conn.execute_read(lua)
+        lines = await self.conn.execute_write(lua)
         return _action_result(lines)
 
     async def skip_remaining_units(self) -> str:
@@ -581,9 +589,9 @@ class GameState:
             fortify_result = _action_result(fort_lines)
         except Exception as e:
             log.debug("Fortify remaining failed: %s", e)
-        # Then skip anything still with moves (GameCore context)
+        # Then skip anything still with moves (InGame, stock Skip Turn)
         lua = lq.build_skip_remaining_units()
-        lines = await self.conn.execute_read(lua)
+        lines = await self.conn.execute_write(lua)
         skip_result = _action_result(lines)
         if fortify_result and not fortify_result.startswith("Error"):
             return f"{fortify_result}\n{skip_result}"
@@ -775,10 +783,10 @@ class GameState:
             )
             matched = verify and verify[0] == "MATCH"
             if not matched:
-                # InGame silently failed — fall back to GameCore
-                gc_lua = lq.build_set_research_gamecore(tech_name)
-                gc_lines = await self.conn.execute_read(gc_lua)
-                return _action_result(gc_lines)
+                return (
+                    f"Error: RESEARCH_NOT_ACCEPTED|The game did not accept {tech_name} "
+                    f"as current research. Check get_tech_civics for what is available."
+                )
         return result
 
     async def set_civic(self, civic_name: str) -> str:
@@ -799,10 +807,10 @@ class GameState:
             )
             matched = verify and verify[0] == "MATCH"
             if not matched:
-                # InGame silently failed — fall back to GameCore
-                lua_gc = lq.build_set_civic_gamecore(civic_name)
-                gc_lines = await self.conn.execute_read(lua_gc)
-                return _action_result(gc_lines)
+                return (
+                    f"Error: CIVIC_NOT_ACCEPTED|The game did not accept {civic_name} "
+                    f"as the current civic. Check get_tech_civics for what is available."
+                )
         return result
 
     # ------------------------------------------------------------------
@@ -951,6 +959,9 @@ class GameState:
         lua = lq.build_propose_trade(other_player_id, offer_items, request_items)
         lines = await self.conn.execute_write(lua)
         result = _action_result(lines)
+        if result.startswith("COUNTER:"):
+            # Session deliberately left open for respond_to_trade.
+            return result
         # Dismiss diplomacy UI left open by the trade session.
         # After CloseSession, the game transitions DiplomacyActionView to
         # OVERVIEW_MODE (intel screen). Need a brief delay for the C++ UI
@@ -1091,72 +1102,8 @@ class GameState:
     async def promote_unit(self, unit_id: int, promotion_type: str) -> str:
         unit_index = unit_id % 65536
         lua = lq.build_promote_unit(unit_index, promotion_type)
-        lines = await self.conn.execute_read(lua)  # GameCore context
+        lines = await self.conn.execute_write(lua)  # InGame: stock PROMOTE command
         result = _action_result(lines)
-        # GameCore SetPromotion doesn't clear the InGame NEEDS_PROMOTION
-        # notification, which blocks end_turn until dismissed.
-        # Use XP-threshold formula (matching end_turn handler) to decide
-        # whether any unit still genuinely needs a promotion before dismissing.
-        if not result.startswith("Error"):
-            try:
-                await self.conn.execute_write(
-                    f"local me = Game.GetLocalPlayer(); "
-                    f"local anyNeed = false; "
-                    f"for i, u in Players[me]:GetUnits():Members() do "
-                    f"  if u:GetX() ~= -9999 then "
-                    f"    local ok, exp = pcall(function() return u:GetExperience() end); "
-                    f"    if ok and exp then "
-                    f"      local ui = GameInfo.Units[u:GetType()]; "
-                    f'      local promClass = ui and ui.PromotionClass or ""; '
-                    f'      if promClass ~= "" then '
-                    f"        local promoCount = 0; "
-                    f"        for p in GameInfo.UnitPromotions() do "
-                    f"          if p.PromotionClass == promClass and exp:HasPromotion(p.Index) then "
-                    f"            promoCount = promoCount + 1 "
-                    f"          end "
-                    f"        end; "
-                    f"        local t1 = exp:GetExperienceForNextLevel(); "
-                    f"        local xp = exp:GetExperiencePoints(); "
-                    f"        local needed = t1 * (promoCount + 1) * (promoCount + 2) / 2; "
-                    f"        if xp >= needed then "
-                    f"          anyNeed = true "
-                    f"        else "
-                    f"          local stored = 0; "
-                    f"          pcall(function() stored = exp:GetStoredPromotions() end); "
-                    f"          if stored > 0 then "
-                    f"            pcall(function() exp:ChangeStoredPromotions(-stored) end) "
-                    f"          end "
-                    f"        end "
-                    f"      end "
-                    f"    end "
-                    f"  end "
-                    f"  if anyNeed then break end "
-                    f"end; "
-                    f"if not anyNeed then "
-                    f"  local list = NotificationManager.GetList(me); "
-                    f"  if list then "
-                    f"    for _, nid in ipairs(list) do "
-                    f"      local e = NotificationManager.Find(me, nid); "
-                    f"      if e and not e:IsDismissed() then "
-                    f"        local bt = e:GetEndTurnBlocking(); "
-                    f"        if bt and bt == EndTurnBlockingTypes.ENDTURN_BLOCKING_UNIT_PROMOTION then "
-                    f"          pcall(function() NotificationManager.SendActivated(me, nid) end); "
-                    f"          pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                    f"        else "
-                    f"          local tn = ''; "
-                    f"          pcall(function() tn = e:GetTypeName() end); "
-                    f"          if tn == 'NOTIFICATION_UNIT_PROMOTION_AVAILABLE' then "
-                    f"            pcall(function() NotificationManager.Dismiss(me, nid) end) "
-                    f"          end "
-                    f"        end "
-                    f"      end "
-                    f"    end "
-                    f"  end "
-                    f"end; "
-                    f'print("OK"); print("{lq.SENTINEL}")'
-                )
-            except Exception:
-                pass  # non-fatal — end_turn blocker handler will catch it
         return result
 
     # ------------------------------------------------------------------
@@ -1739,24 +1686,33 @@ class GameState:
 
         return await list_saves(self.conn)
 
-    async def load_save(self, save_index: int) -> str:
+    async def load_save(self, save_index: int, reason: str = "") -> str:
         """Load a save file by index."""
         import time
         from civ_mcp.game_lifecycle import load_save
 
         result = await load_save(self.conn, save_index)
         if not result.startswith(("Error", "ERR", "FAILED")):
-            self._record_save_load(f"index:{save_index}")
+            self.record_load(f"index:{save_index}", reason)
         return result
 
-    async def load_game_save(self, save_name: str) -> str:
+    async def load_game_save(self, save_name: str, reason: str = "") -> str:
         """Load a save file by name (no list_saves prerequisite)."""
         from civ_mcp.game_lifecycle import load_game_save
 
         result = await load_game_save(self.conn, save_name)
         if not result.startswith(("Error", "ERR", "FAILED")):
-            self._record_save_load(save_name)
+            self.record_load(save_name, reason)
         return result
+
+    def record_load(self, save_name: str, reason: str) -> None:
+        """Record a save load (scum detection) and announce it with its reason."""
+        self._record_save_load(save_name)
+        if self.on_load is not None:
+            try:
+                self.on_load(save_name, reason)
+            except Exception:
+                log.debug("on_load callback failed", exc_info=True)
 
     def _record_save_load(self, save_name: str) -> None:
         """Record a successful save load for scumming detection."""

@@ -851,10 +851,19 @@ print("{SENTINEL}")
 
 
 def build_skip_unit(unit_index: int) -> str:
-    """Skip a unit's turn (GameCore context — uses FinishMoves)."""
+    """Skip a unit's turn (InGame context).
+
+    The unit panel's Skip Turn button requests the stock
+    UNITOPERATION_SKIP_TURN operation via UnitManager.RequestOperation.
+    """
     return f"""
-{_lua_get_unit_gamecore(unit_index)}
-UnitManager.FinishMoves(unit)
+{_lua_get_unit(unit_index)}
+local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]
+if skipOp == nil then {_bail("ERR:NO_SKIP_OPERATION")} end
+if not UnitManager.CanStartOperation(unit, skipOp.Hash, nil, true) then
+    {_bail("ERR:CANNOT_SKIP|Unit cannot skip its turn")}
+end
+UnitManager.RequestOperation(unit, skipOp.Hash)
 print("OK:SKIPPED")
 print("{SENTINEL}")
 """
@@ -901,15 +910,19 @@ print("{SENTINEL}")
 
 
 def build_skip_remaining_units() -> str:
-    """Skip all units with moves remaining (GameCore context — FinishMoves for each)."""
+    """Skip all units with moves remaining (InGame context, stock Skip Turn operation)."""
     return """
 local me = Game.GetLocalPlayer()
 local count = 0
+local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]
+if skipOp == nil then print("ERR:NO_SKIP_OPERATION"); print("{SENTINEL}"); return end
 for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
     if x ~= -9999 and unit:GetMovesRemaining() > 0 then
-        UnitManager.FinishMoves(unit)
-        count = count + 1
+        if UnitManager.CanStartOperation(unit, skipOp.Hash, nil, true) then
+            UnitManager.RequestOperation(unit, skipOp.Hash)
+            count = count + 1
+        end
     end
 end
 print("OK:SKIPPED|" .. count .. " units")

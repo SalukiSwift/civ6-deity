@@ -261,9 +261,7 @@ from civ_mcp.lua.religion import (  # noqa: F401
 )
 from civ_mcp.lua.tech import (  # noqa: F401
     build_set_civic,
-    build_set_civic_gamecore,
     build_set_research,
-    build_set_research_gamecore,
     build_tech_civics_query,
     parse_tech_civics_response,
 )

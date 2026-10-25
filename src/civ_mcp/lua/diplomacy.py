@@ -806,9 +806,9 @@ if sid and sid >= 0 then
         return DealManager.GetWorkingDeal(DealDirection.INCOMING, me, target)
     end)
     if ok and respDeal and respDeal:GetItemCount() and respDeal:GetItemCount() > 0 then
-        DealManager.SendWorkingDeal(DealProposalAction.ACCEPTED, me, target)
-        result = "ACCEPTED"
-        -- Report the actual deal terms (AI may have counter-offered different terms)
+        -- The AI countered. Report its terms; accepting is the player's call
+        -- (respond_to_trade), so the session is left open.
+        result = "COUNTER"
         local weGive = {{}}
         local theyGive = {{}}
         for item in respDeal:Items() do
@@ -839,16 +839,22 @@ if sid and sid >= 0 then
             else table.insert(theyGive, desc) end
         end
         if #weGive > 0 or #theyGive > 0 then
-            termsStr = "\\nActual deal terms:"
-            if #weGive > 0 then termsStr = termsStr .. "\\n  We give: " .. table.concat(weGive, ", ") end
-            if #theyGive > 0 then termsStr = termsStr .. "\\n  They give: " .. table.concat(theyGive, ", ") end
+            termsStr = ""
+            if #weGive > 0 then termsStr = termsStr .. " We give: " .. table.concat(weGive, ", ") .. "." end
+            if #theyGive > 0 then termsStr = termsStr .. " They give: " .. table.concat(theyGive, ", ") .. "." end
         end
     else
         result = "REJECTED"
     end
-    {_lua_close_diplo_session()}
+    if result ~= "COUNTER" then
+        {_lua_close_diplo_session()}
+    end
 end
-print("OK:" .. result .. "|Trade " .. result:lower() .. " with " .. name .. termsStr)
+if result == "COUNTER" then
+    print("OK:COUNTER: " .. name .. " countered." .. termsStr .. " The session is open: call respond_to_trade to accept or reject.")
+else
+    print("OK:" .. result .. "|Trade " .. result:lower() .. " with " .. name)
+end
 print("{SENTINEL}")
 """
 

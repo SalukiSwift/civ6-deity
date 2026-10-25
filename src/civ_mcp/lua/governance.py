@@ -365,45 +365,32 @@ print("{SENTINEL}")
 
 
 def build_promote_unit(unit_index: int, promotion_type: str) -> str:
-    """Apply a promotion to a unit (GameCore context).
+    """Promote a unit through the stock PROMOTE command (InGame context).
 
-    Uses GameCore SetPromotion because InGame RequestCommand(PROMOTE)
-    silently fails (persistent bug across Games 1, 4, and 5).
+    Same call the unit panel and promotion popup make:
+    UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE,
+    {[UnitCommandTypes.PARAM_PROMOTION_TYPE] = hash}). No free heal, no
+    direct promotion writes; the game decides legality.
     """
     return f"""
-{_lua_get_unit_gamecore(unit_index)}
-local x, y = unit:GetX(), unit:GetY()
+{_lua_get_unit(unit_index)}
+local x = unit:GetX()
 if x == -9999 then {_bail("ERR:UNIT_CONSUMED")} end
 local promo = GameInfo.UnitPromotions["{promotion_type}"]
 if promo == nil then {_bail(f"ERR:PROMOTION_NOT_FOUND|{promotion_type}")} end
 local exp = unit:GetExperience()
 if exp == nil then {_bail("ERR:NO_EXPERIENCE|Unit has no experience object")} end
--- XP-threshold gate: prevent infinite promotions from SetPromotion desync.
-local ui = GameInfo.Units[unit:GetType()]
-local promClass = ui and ui.PromotionClass or ""
-{_LUA_XP_THRESHOLD}
-if xp < xpNeeded then {_bail_lua('"ERR:INSUFFICIENT_XP|Have " .. xp .. " XP, need " .. xpNeeded .. " for promotion " .. (xpPromoCount + 1) .. " (have " .. xpPromoCount .. " already)"')} end
-local canPromote = false
-pcall(function() canPromote = exp:CanPromote(promo.Index) end)
-if not canPromote then {_bail("ERR:CANNOT_PROMOTE|Unit cannot receive this promotion (wrong class, missing prereq, or insufficient XP)")} end
 if exp:HasPromotion(promo.Index) then {_bail(f"ERR:ALREADY_HAS_PROMOTION|{promotion_type}")} end
-exp:SetPromotion(promo.Index)
-if not exp:HasPromotion(promo.Index) then {_bail("ERR:PROMOTION_FAILED|SetPromotion did not apply")} end
--- Sync engine state: zero out stored promotions so the engine stops
--- generating ENDTURN_BLOCKING_UNIT_PROMOTION notifications.
--- ChangeStoredPromotions(-1) is insufficient when stored > 1 (e.g. unit
--- earned enough XP for two promotions). Read the current count and zero it.
-local stored = 0
-pcall(function() stored = exp:GetStoredPromotions() end)
-if stored > 0 then
-    pcall(function() exp:ChangeStoredPromotions(-stored) end)
+local canPromote = UnitManager.CanStartCommand(unit, UnitCommandTypes.PROMOTE, true, true)
+if canPromote then pcall(function() canPromote = exp:CanPromote(promo.Index) end) end
+local tParameters = {{}}
+tParameters[UnitCommandTypes.PARAM_PROMOTION_TYPE] = promo.Hash
+if not canPromote then
+    {_bail("ERR:CANNOT_PROMOTE|The game does not offer this promotion now (not enough XP, wrong class, missing prerequisite, or already promoted this turn)")}
 end
--- Verify: if stored is still > 0 after zeroing, log it for diagnostics
-local storedAfter = 0
-pcall(function() storedAfter = exp:GetStoredPromotions() end)
-pcall(function() unit:SetDamage(0) end)
+UnitManager.RequestCommand(unit, UnitCommandTypes.PROMOTE, tParameters)
 local promoName = Locale.Lookup(promo.Name)
-print("OK:PROMOTED|" .. promoName .. "|stored:" .. stored .. "->" .. storedAfter)
+print("OK:PROMOTED|" .. promoName .. "|hp:" .. (unit:GetMaxDamage() - unit:GetDamage()) .. "/" .. unit:GetMaxDamage() .. "|moves:" .. unit:GetMovesRemaining())
 print("{SENTINEL}")
 """
 

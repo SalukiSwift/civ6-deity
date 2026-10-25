@@ -62,7 +62,11 @@ class AppContext:
     broadcast: Broadcast
 
 
-async def _auto_boot(conn: GameConnection, save_name: str) -> None:
+async def _auto_boot(
+    conn: GameConnection,
+    save_name: str,
+    record_load: Callable[[str, str], None] | None = None,
+) -> None:
     """Launch game and load a save before MCP tools become available.
 
     Called during lifespan when CIV_MCP_SAVE_FILE is set (eval mode).
@@ -161,6 +165,8 @@ async def _auto_boot(conn: GameConnection, save_name: str) -> None:
     log.info("Auto-boot: loading save '%s'...", save_name)
     result = await load_game_save(conn, save_name)
     log.info("Auto-boot: load result: %s", result)
+    if record_load is not None:
+        record_load(save_name, "auto-boot from CIV_MCP_SAVE_FILE")
     heartbeat.write("loading")
 
     # 4. Wait for save to load, click through leader intro, then reconnect.
@@ -323,7 +329,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Auto-boot: launch game + load save when running as eval
     save_file = os.environ.get("CIV_MCP_SAVE_FILE")
     if save_file:
-        await _auto_boot(conn, save_file)
+        await _auto_boot(conn, save_file, record_load=gs.record_load)
 
     # Spectator-mode background services (camera tracking + popup auto-dismiss)
     camera = CameraController(conn)
@@ -340,6 +346,17 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     api_task = asyncio.create_task(uvi_server.serve())
     log.info("Web API starting on http://0.0.0.0:8000")
 
+    broadcast = Broadcast(Path(__file__).parents[2] / "campaign")
+
+    def _announce_load(save_name: str, reason: str) -> None:
+        broadcast.append(
+            "load",
+            f"loaded {save_name}: {reason}",
+            turn=gs._high_water_turn or None,
+        )
+
+    gs.on_load = _announce_load
+
     try:
         yield AppContext(
             game=gs,
@@ -348,7 +365,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             popup_watcher=popup_watcher,
             spatial=spatial,
             watchdog=watchdog,
-            broadcast=Broadcast(Path(__file__).parents[2] / "campaign"),
+            broadcast=broadcast,
         )
     finally:
         await emitter.close()
@@ -391,6 +408,24 @@ def _get_watchdog(ctx: Context) -> GameOverWatchdog:
 
 def _get_broadcast(ctx: Context) -> Broadcast:
     return ctx.request_context.lifespan_context.broadcast
+
+
+def _require_reason(reason: str) -> str | None:
+    """Error string when a load tool is called without a reason, else None."""
+    if not reason or not reason.strip():
+        return (
+            "Error: a non-empty `reason` is required for every load. "
+            "State why you are loading this save; it is logged publicly."
+        )
+    return None
+
+
+def _launcher_load_ok(result: str) -> bool:
+    """Heuristic: did a launcher (menu/restart) load get as far as loading?"""
+    return not (
+        result.startswith(("Save '", "No autosaves", "Error"))
+        or "ABORTED" in result
+    )
 
 
 def _bind_fog(gs: GameState, bc: Broadcast) -> None:
@@ -524,6 +559,8 @@ async def _logged(
                 restart_result = await game_launcher.restart_and_load(save)
                 log.info("CONNECTION RECOVERY: %s", restart_result)
                 gs = _get_game(ctx)
+                if _launcher_load_ok(restart_result):
+                    gs.record_load(save or "latest autosave", "connection lost 5x")
                 for rc_attempt in range(30):
                     try:
                         await gs.conn.reconnect()
@@ -2159,6 +2196,8 @@ async def end_turn(ctx: Context, summary: str) -> str:
                     # Step 1: Kill + relaunch + OCR load
                     restart_result = await game_launcher.restart_and_load(hang_save)
                     log.info("HANG RECOVERY: restart_and_load: %s", restart_result)
+                    if _launcher_load_ok(restart_result):
+                        gs.record_load(hang_save, "turn hang recovery")
 
                     # Step 2: Reconnect
                     conn = gs.conn
@@ -2886,7 +2925,6 @@ async def dismiss_popup(ctx: Context) -> str:
     return await _logged(ctx, "dismiss_popup", {}, gs.dismiss_popup)
 
 
-@mcp.tool(annotations={"destructiveHint": True})
 async def run_lua(ctx: Context, code: str, context: str = "gamecore") -> str:
     """Run arbitrary Lua code in the game. Advanced escape hatch — prefer built-in tools.
 
@@ -2909,6 +2947,15 @@ async def run_lua(ctx: Context, code: str, context: str = "gamecore") -> str:
     )
 
 
+def _register_dev_tools() -> None:
+    """Register developer-only tools. run_lua is off unless CIV_MCP_DEV_LUA=1."""
+    if os.environ.get("CIV_MCP_DEV_LUA") == "1":
+        mcp.tool(annotations={"destructiveHint": True})(run_lua)
+
+
+_register_dev_tools()
+
+
 # ---------------------------------------------------------------------------
 # Save / Load
 # ---------------------------------------------------------------------------
@@ -2926,39 +2973,50 @@ async def list_saves(ctx: Context) -> str:
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def load_save(ctx: Context, save_index: int) -> str:
+async def load_save(ctx: Context, save_index: int, reason: str) -> str:
     """Load a save file by index from the most recent list_saves() result.
 
     Args:
         save_index: Index number from list_saves output (1-based)
+        reason: Required. Why you are loading (logged publicly; repeated loads
+                are treated as save-scumming).
 
     The game will reload entirely. Wait ~10 seconds after calling this,
     then use get_game_overview to verify the loaded state.
     """
+    if (err := _require_reason(reason)) is not None:
+        return err
     gs = _get_game(ctx)
     return await _logged(
-        ctx, "load_save", {"save_index": save_index}, lambda: gs.load_save(save_index)
+        ctx,
+        "load_save",
+        {"save_index": save_index, "reason": reason},
+        lambda: gs.load_save(save_index, reason),
     )
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def load_game_save(ctx: Context, save_name: str) -> str:
+async def load_game_save(ctx: Context, save_name: str, reason: str) -> str:
     """Load a save file by name. No need to call list_saves first.
 
     Args:
         save_name: Save name without extension (e.g. "0_MCP_0079",
                    "0A_GROUND_CONTROL", "AutoSave_0221", "quicksave").
+        reason: Required. Why you are loading (logged publicly; repeated loads
+                are treated as save-scumming).
 
     Tries Lua-based loading first (fast, ~5s). If the save isn't found
     via Lua (common for autosaves/quicksaves), falls back to OCR menu
     navigation (~90s) after verifying the file exists on disk.
     """
+    if (err := _require_reason(reason)) is not None:
+        return err
     gs = _get_game(ctx)
     return await _logged(
         ctx,
         "load_game_save",
-        {"save_name": save_name},
-        lambda: gs.load_game_save(save_name),
+        {"save_name": save_name, "reason": reason},
+        lambda: gs.load_game_save(save_name, reason),
     )
 
 
@@ -2994,10 +3052,13 @@ async def launch_game(ctx: Context) -> str:
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def load_save_from_menu(ctx: Context, save_name: str | None = None) -> str:
+async def load_save_from_menu(
+    ctx: Context, reason: str, save_name: str | None = None
+) -> str:
     """Navigate the main menu to load a save via OCR-guided clicking.
 
     Args:
+        reason: Required. Why you are loading (logged publicly).
         save_name: Autosave name (e.g. "AutoSave_0221"). If not provided,
                    loads the most recent autosave.
 
@@ -3008,14 +3069,22 @@ async def load_save_from_menu(ctx: Context, save_name: str | None = None) -> str
 
     Requires pyobjc: uv pip install 'civ6-mcp[launcher]'
     """
-    return await game_launcher.load_save_from_menu(save_name)
+    if (err := _require_reason(reason)) is not None:
+        return err
+    result = await game_launcher.load_save_from_menu(save_name)
+    if _launcher_load_ok(result):
+        _get_game(ctx).record_load(save_name or "latest autosave", reason)
+    return result
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def restart_and_load(ctx: Context, save_name: str | None = None) -> str:
+async def restart_and_load(
+    ctx: Context, reason: str, save_name: str | None = None
+) -> str:
     """Full game recovery: kill, relaunch, and load a save.
 
     Args:
+        reason: Required. Why you are loading (logged publicly).
         save_name: Autosave name (e.g. "AutoSave_0221"). If not provided,
                    loads the most recent autosave.
 
@@ -3028,10 +3097,14 @@ async def restart_and_load(ctx: Context, save_name: str | None = None) -> str:
 
     After completion, wait ~10 seconds then call get_game_overview to verify.
     """
+    if (err := _require_reason(reason)) is not None:
+        return err
     gs = _get_game(ctx)
     identity_before = gs._game_identity
 
     result = await game_launcher.restart_and_load(save_name)
+    if _launcher_load_ok(result):
+        gs.record_load(save_name or "latest autosave", reason)
 
     # Reconnect and verify correct game loaded
     conn = gs.conn
@@ -3104,8 +3177,5 @@ def main():
         signal.signal(
             signal.SIGTERM, lambda sig, frame: os.kill(os.getpid(), signal.SIGINT)
         )
-
-    if os.environ.get("CIV_MCP_DISABLE_LUA"):
-        mcp._tool_manager.remove_tool("run_lua")
 
     mcp.run(transport="stdio")

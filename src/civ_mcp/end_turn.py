@@ -712,29 +712,9 @@ async def execute_end_turn(gs: GameState) -> str:
                     hard_blockers.append((blocking_type, blocking_msg))
                     continue
 
-                if blocking_type == "ENDTURN_BLOCKING_CONSIDER_DISLOYAL_CITY":
-                    try:
-                        result = await gs.resolve_city_capture("keep")
-                        if "Error" not in result:
-                            log.info("Auto-kept disloyal city: %s", result)
-                            resolved_any = True
-                            continue
-                    except Exception:
-                        log.debug("Disloyal city auto-resolve failed", exc_info=True)
-                    hard_blockers.append((blocking_type, blocking_msg))
-                    continue
-
-                if blocking_type == "ENDTURN_BLOCKING_CONSIDER_RAZE_CITY":
-                    try:
-                        result = await gs.resolve_city_capture("keep")
-                        if "Error" not in result:
-                            log.info("Auto-kept captured city: %s", result)
-                            resolved_any = True
-                            continue
-                    except Exception:
-                        log.debug("Captured city auto-resolve failed", exc_info=True)
-                    hard_blockers.append((blocking_type, blocking_msg))
-                    continue
+                # CONSIDER_DISLOYAL_CITY / CONSIDER_RAZE_CITY are deliberately
+                # NOT auto-answered: keep/raze/liberate is the player's call.
+                # They fall through to hard_blockers with the city_action hint.
 
                 if blocking_type == "ENDTURN_BLOCKING_GIVE_INFLUENCE_TOKEN":
                     try:
@@ -913,21 +893,16 @@ async def execute_end_turn(gs: GameState) -> str:
                     continue
 
                 # --- Stale promotion notifications ---
-                # GameCore SetPromotion doesn't consume XP or advance level,
-                # so CanPromote() perpetually returns TRUE. Use XP-threshold
-                # formula (matching promote_unit's post-promote dismiss) to
-                # determine if any unit genuinely has enough XP for another
-                # promotion: needed = T1 * (promoCount+1) * (promoCount+2) / 2
+                # Use the XP-threshold formula to decide whether any unit
+                # genuinely has enough XP for another promotion:
+                # needed = T1 * (promoCount+1) * (promoCount+2) / 2.
+                # If none does, only the stale notification is dismissed.
                 if blocking_type == "ENDTURN_BLOCKING_UNIT_PROMOTION":
                     try:
-                        # Step 1 (GameCore): Check XP formula AND zero out stored
-                        # promotions on units that don't genuinely need one.
-                        # ChangeStoredPromotions zeroes the engine counter that
-                        # causes the blocker to regenerate after Dismiss().
+                        # Step 1 (GameCore): check the XP formula. Read-only: nothing is written to the units.
                         check_lines = await gs.conn.execute_read(
                             f"local me = Game.GetLocalPlayer(); "
                             f"local anyNeed = false; "
-                            f"local cleared = 0; "
                             f"for i, u in Players[me]:GetUnits():Members() do "
                             f"  if u:GetX() ~= -9999 then "
                             f"    local ok, exp = pcall(function() return u:GetExperience() end); "
@@ -946,19 +921,12 @@ async def execute_end_turn(gs: GameState) -> str:
                             f"        local needed = t1 * (promoCount + 1) * (promoCount + 2) / 2; "
                             f"        if xp >= needed then "
                             f"          anyNeed = true "
-                            f"        else "
-                            f"          local stored = 0; "
-                            f"          pcall(function() stored = exp:GetStoredPromotions() end); "
-                            f"          if stored > 0 then "
-                            f"            pcall(function() exp:ChangeStoredPromotions(-stored) end); "
-                            f"            cleared = cleared + 1 "
-                            f"          end "
                             f"        end "
                             f"      end "
                             f"    end "
                             f"  end "
                             f"end; "
-                            f'print(anyNeed and "NEEDS_PROMO" or ("NO_PROMO_NEEDED|cleared=" .. cleared)); '
+                            f'print(anyNeed and "NEEDS_PROMO" or "NO_PROMO_NEEDED"); '
                             f'print("{lq.SENTINEL}")'
                         )
                         needs_promo = any(
@@ -967,7 +935,7 @@ async def execute_end_turn(gs: GameState) -> str:
                         log.debug(
                             "Promotion blocker: needs_promo=%s (check=%s)",
                             needs_promo,
-                            [l for l in check_lines if "PROMO" in l or "cleared" in l],
+                            [l for l in check_lines if "PROMO" in l],
                         )
                         if not needs_promo:
                             # Step 2: InGame dismiss — NotificationManager is InGame-only.
@@ -1006,23 +974,24 @@ async def execute_end_turn(gs: GameState) -> str:
                     hard_blockers.append((blocking_type, blocking_msg))
                     continue
 
-                # --- Units blocking: auto-skip if all have 0 moves ---
+                # --- Units blocking: stock Skip Turn (InGame) if all have 0 moves ---
                 if blocking_type == "ENDTURN_BLOCKING_UNITS":
                     try:
                         check_lua = (
                             f"local me = Game.GetLocalPlayer(); "
                             f"local anyMoves = false; "
+                            f'local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]; '
                             f"for _, u in Players[me]:GetUnits():Members() do "
                             f"  if u:GetX() ~= -9999 and u:GetMovesRemaining() > 0 then "
                             f"    anyMoves = true; break end end; "
                             f"if not anyMoves then "
                             f"  for _, u in Players[me]:GetUnits():Members() do "
-                            f"    if u:GetX() ~= -9999 then UnitManager.FinishMoves(u) end "
+                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.CanStartOperation(u, skipOp.Hash, nil, true) then UnitManager.RequestOperation(u, skipOp.Hash) end "
                             f'  end; print("AUTO_SKIPPED") '
                             f'else print("UNITS_NEED_ORDERS") end; '
                             f'print("{lq.SENTINEL}")'
                         )
-                        skip_lines = await gs.conn.execute_read(check_lua)
+                        skip_lines = await gs.conn.execute_write(check_lua)
                         if any("AUTO_SKIPPED" in l for l in skip_lines):
                             resolved_any = True
                             continue
