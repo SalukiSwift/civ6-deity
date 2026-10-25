@@ -22,6 +22,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from civ_mcp import game_launcher, heartbeat
 from civ_mcp.broadcast import ACTION_TOOLS, KINDS, Broadcast
+from civ_mcp.situation import format_situation, gather_situation
 from civ_mcp.game_over_watchdog import GameOverWatchdog
 from civ_mcp import narrate as nr
 from civ_mcp.connection import GameConnection, LuaError
@@ -2003,6 +2004,25 @@ async def narrate(ctx: Context, kind: str, text: str) -> str:
     return "logged"
 
 
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_situation(ctx: Context) -> str:
+    """Get the situation board: empire summary, everything needing attention
+    (idle units, empty production, unset research, envoys, governor titles,
+    trade routes, pending choices), nearby threats and rival scores.
+    It is also appended automatically after every end_turn."""
+    gs = _get_game(ctx)
+
+    async def _run():
+        board = format_situation(await gather_situation(gs))
+        try:
+            _get_broadcast(ctx).set_board(board)
+        except Exception:
+            log.debug("set_board failed", exc_info=True)
+        return board
+
+    return await _logged(ctx, "get_situation", {}, _run)
+
+
 @mcp.tool(annotations={"destructiveHint": True})
 async def end_turn(ctx: Context, summary: str) -> str:
     """End the current turn.
@@ -2325,6 +2345,12 @@ async def end_turn(ctx: Context, summary: str) -> str:
             _get_logger(ctx).set_turn(new_turn)
             _get_spatial(ctx).set_turn(new_turn)
             heartbeat.write("playing", turn=new_turn)
+        try:
+            board = format_situation(await gather_situation(gs))
+            result += "\n== Situation ==\n" + board
+            _get_broadcast(ctx).set_board(board)
+        except Exception:
+            log.warning("Situation board failed", exc_info=True)
         try:
             _get_broadcast(ctx).append(
                 "event",

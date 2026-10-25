@@ -183,7 +183,14 @@ for i, u in Players[id]:GetUnits():Members() do
             end
             if #meList > 0 then validImps = table.concat(meList, ";") end
         end
-        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName)
+        -- Busy = holding an order (fortify/sleep/sentry/heal/mission) or automated
+        local busy = "0"
+        pcall(function()
+            local act = u:GetActivityType()
+            if act ~= nil and act ~= ActivityTypes.ACTIVITY_AWAKE then busy = "1" end
+            if u.IsAutomated and u:IsAutomated() then busy = "1" end
+        end)
+        print(uid .. "|" .. (uid % 65536) .. "|" .. nm .. "|" .. ut .. "|" .. x .. "," .. y .. "|" .. u:GetMovesRemaining() .. "/" .. u:GetMaxMoves() .. "|" .. (u:GetMaxDamage() - u:GetDamage()) .. "/" .. u:GetMaxDamage() .. "|" .. cs .. "|" .. rs .. "|" .. charges .. "|" .. targets .. "|" .. promo .. "|" .. canUp .. "|" .. upName .. "|" .. upCost .. "|" .. validImps .. "|" .. relName .. "|" .. busy)
     end
 end
 print("{SENTINEL}")
@@ -1413,6 +1420,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
             [v for v in valid_imps_raw.split(";") if v] if valid_imps_raw else []
         )
         religion = parts[16] if len(parts) > 16 else ""
+        is_busy = parts[17] == "1" if len(parts) > 17 else False
         units.append(
             UnitInfo(
                 unit_id=int(parts[0]),
@@ -1435,6 +1443,7 @@ def parse_units_response(lines: list[str]) -> list[UnitInfo]:
                 upgrade_cost=upgrade_cost,
                 valid_improvements=valid_imps,
                 religion=religion,
+                is_busy=is_busy,
             )
         )
     return units

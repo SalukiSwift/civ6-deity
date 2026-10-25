@@ -94,6 +94,7 @@ Guard column: IsRevealed, IsVisible and HasMet are the game's own visibility and
 | `get_world_congress` | R | Congress status and resolutions | World Congress screen | none needed (only when in session or announced) |
 | `queue_wc_votes` | M | Pre-sets Congress votes | World Congress screen | game rules |
 | `get_victory_progress` | R | Victory progress; rivals via World Rankings values and revealed cities only | World Rankings, Victory screens | HasMet, IsRevealed |
+| `get_situation` | R | Situation board; aggregates existing player-visible queries, no new data | Top bar, unit list, city list, World Rankings | none needed |
 | `get_religion_spread` | R | Religion by city | Religion lens | IsVisible for foreign cities |
 | `set_city_focus` | M | Sets citizen yield focus | City panel citizen management | game rules |
 | `dismiss_popup` | M | Closes a blocking popup | Close button on the popup | none needed |
