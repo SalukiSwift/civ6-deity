@@ -5,7 +5,12 @@ All functions are pure: data in, string out. No side effects, no I/O.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from civ_mcp import lua as lq
+
+if TYPE_CHECKING:
+    from civ_mcp.fog import FogMemory
 
 
 def narrate_overview(ov: lq.GameOverview) -> str:
@@ -496,7 +501,7 @@ def narrate_city_production(options: list[lq.ProductionOption]) -> str:
     return "\n".join(lines)
 
 
-def narrate_map(tiles: list[lq.TileInfo]) -> str:
+def narrate_map(tiles: list[lq.TileInfo], fog: "FogMemory | None" = None) -> str:
     if not tiles:
         return "No tiles."
     lines = [f"{len(tiles)} tiles:"]
@@ -520,17 +525,18 @@ def narrate_map(tiles: list[lq.TileInfo]) -> str:
         if t.is_fresh_water and not t.is_river:
             # Fresh water from lake/oasis (river already implies fresh water)
             parts.append("FreshWater")
-        if t.improvement:
+        live = t.visible
+        if live and t.improvement:
             imp_label = t.improvement.replace("IMPROVEMENT_", "")
             if t.is_pillaged:
                 imp_label += " PILLAGED"
             parts.append(f"({imp_label})")
-        if t.route_type >= 0:
+        if live and t.route_type >= 0:
             route_name = "Railroad" if t.route_type == 4 else "Road"
             parts.append(f"({route_name})")
-        if t.district:
+        if live and t.district:
             parts.append(f"[{t.district.replace('DISTRICT_', '')}]")
-        if t.yields:
+        if live and t.yields:
             f, p, g = t.yields[0], t.yields[1], t.yields[2]
             yield_str = f"F:{f} P:{p}"
             if g > 0:
@@ -544,7 +550,7 @@ def narrate_map(tiles: list[lq.TileInfo]) -> str:
                 if val > 0:
                     yield_str += f" {label}:{val}"
             parts.append(f"{{{yield_str}}}")
-        if t.owner_id < 0:
+        if not live or t.owner_id < 0:
             owner = ""
         elif t.owner_name:
             label = t.owner_name.replace(":CS", " [City-State]")
@@ -552,10 +558,23 @@ def narrate_map(tiles: list[lq.TileInfo]) -> str:
         else:
             owner = f" (owned by player {t.owner_id})"
         vis_tag = ""
-        if t.visibility == "revealed":
-            vis_tag = " [fog]"
+        if not live:
+            vis_tag = " (fog)"
+            seen = fog.recall(t.x, t.y) if fog is not None else None
+            if seen is not None:
+                bits = [f"owner {seen.owner.replace(':CS', ' [City-State]')}"] if seen.owner else []
+                if seen.improvement:
+                    imp = seen.improvement.replace("IMPROVEMENT_", "")
+                    if seen.pillaged:
+                        imp += " PILLAGED"
+                    bits.append(f"improvement {imp}")
+                if seen.district:
+                    bits.append(f"district {seen.district.replace('DISTRICT_', '')}")
+                vis_tag = f" (fog; last seen T{seen.turn}" + (
+                    ": " + ", ".join(bits) if bits else ""
+                ) + ")"
         unit_str = ""
-        if t.units:
+        if live and t.units:
             unit_str = f" **[{', '.join(t.units)}]**"
         own_str = ""
         if t.own_units:

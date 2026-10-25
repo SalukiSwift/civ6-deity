@@ -34,7 +34,8 @@ from civ_mcp.diary import (
 )
 from civ_mcp.game_state import GameState
 from civ_mcp.logger import GameLogger
-from civ_mcp.map_capture import MapCapture
+from civ_mcp.fog import FogMemory
+from civ_mcp import lua as lq
 from civ_mcp.spatial import SpatialTracker
 from civ_mcp.spectator import CameraController, PopupWatcher
 from civ_mcp.telemetry import (
@@ -57,7 +58,6 @@ class AppContext:
     camera: CameraController
     popup_watcher: PopupWatcher
     spatial: SpatialTracker
-    map_capture: MapCapture
     watchdog: GameOverWatchdog
     broadcast: Broadcast
 
@@ -317,7 +317,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     logger = GameLogger(emitter)
     spatial = SpatialTracker(emitter)
-    map_capture = MapCapture(emitter)
     gs = GameState(conn)
     log.info("Game logger session: %s", logger.session_id)
 
@@ -348,7 +347,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             camera=camera,
             popup_watcher=popup_watcher,
             spatial=spatial,
-            map_capture=map_capture,
             watchdog=watchdog,
             broadcast=Broadcast(Path(__file__).parents[2] / "campaign"),
         )
@@ -385,8 +383,6 @@ def _get_spatial(ctx: Context) -> SpatialTracker:
     return ctx.request_context.lifespan_context.spatial
 
 
-def _get_map_capture(ctx: Context) -> MapCapture:
-    return ctx.request_context.lifespan_context.map_capture
 
 
 def _get_watchdog(ctx: Context) -> GameOverWatchdog:
@@ -395,6 +391,15 @@ def _get_watchdog(ctx: Context) -> GameOverWatchdog:
 
 def _get_broadcast(ctx: Context) -> Broadcast:
     return ctx.request_context.lifespan_context.broadcast
+
+
+def _bind_fog(gs: GameState, bc: Broadcast) -> None:
+    """Point last-seen fog memory at the bound game directory's fog.json."""
+    game_dir = bc.game_dir
+    if game_dir is None:
+        return
+    path = game_dir / "fog.json"
+    gs.fog = FogMemory.load(path) if path.exists() else FogMemory(path=path)
 
 
 async def _bind_broadcast(ctx: Context) -> Broadcast:
@@ -418,6 +423,7 @@ async def _bind_broadcast(ctx: Context) -> Broadcast:
             was_bound = bc.game_dir is not None
             civ = civ.lower().removeprefix("civilization_")
             bc.bind_game(identity, civ)
+            _bind_fog(_get_game(ctx), bc)
             if was_bound:
                 bc.append("game", f"new game detected: {civ}")
     except Exception:
@@ -779,7 +785,7 @@ async def get_map_area(
     async def _run():
         tiles = await gs.get_map_area(center_x, center_y, radius)
         tile_coords.update((t.x, t.y) for t in tiles)
-        return nr.narrate_map(tiles)
+        return nr.narrate_map(tiles, fog=gs.fog)
 
     result = await _logged(
         ctx,
@@ -2276,15 +2282,6 @@ async def end_turn(ctx: Context, summary: str) -> str:
             )
         except Exception:
             log.warning("Broadcast event log failed", exc_info=True)
-        # Map capture — record terrain (first turn) + ownership delta
-        if _diary_civ_type and _diary_seed:
-            try:
-                mc = _get_map_capture(ctx)
-                mc.bind_game(_diary_civ_type, _diary_seed)
-                capture_turn = new_turn if m else _diary_turn
-                await mc.capture(gs.conn, capture_turn)
-            except Exception:
-                log.debug("Map capture failed", exc_info=True)
     elif "Turn paused" in result or "World Congress fires" in result:
         gs._end_turn_blocked = True
         # Safety net: if WC blocker fires repeatedly on the same turn,

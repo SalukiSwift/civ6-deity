@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
 from civ_mcp.connection import GameConnection
+from civ_mcp.fog import FogMemory
 from civ_mcp.narrate import (
     narrate_combat_estimate,
     narrate_move_discoveries,
@@ -35,6 +36,9 @@ class GameState:
     def __init__(self, connection: GameConnection):
         self.conn = connection
         self.spatial: SpatialTracker | None = None
+        # Last-seen memory for fogged tiles; server swaps in a file-backed one
+        # when the broadcast binds to a game directory.
+        self.fog: FogMemory = FogMemory()
         self._last_snapshot: lq.TurnSnapshot | None = None
         self._game_identity: tuple[str, int] | None = None  # (civ_type, seed)
         self._diary_written_turn: int | None = (
@@ -194,7 +198,17 @@ class GameState:
         lines = await self.conn.execute_read(
             lq.build_map_area_query(center_x, center_y, radius)
         )
-        return lq.parse_map_response(lines)
+        tiles = lq.parse_map_response(lines)
+        self._remember_tiles(tiles)
+        return tiles
+
+    def _remember_tiles(self, tiles: list[lq.TileInfo]) -> None:
+        """Feed currently-visible tiles to FogMemory and persist."""
+        try:
+            self.fog.remember(self._high_water_turn or 0, tiles)
+            self.fog.save()
+        except Exception:
+            log.warning("FogMemory update failed", exc_info=True)
 
     async def get_strategic_map(self) -> lq.StrategicMapData:
         lines = await self.conn.execute_read(lq.build_strategic_map_query())
@@ -287,6 +301,12 @@ class GameState:
                         lq.build_post_move_visibility_query(vis_x, vis_y)
                     )
                     vis_tiles = lq.parse_post_move_visibility(vis_lines)
+                    # The post-move scan carries no owner/improvement data, so
+                    # refresh last-seen memory around the unit from a map read.
+                    try:
+                        await self.get_map_area(vis_x, vis_y, 3)
+                    except Exception:
+                        pass
                     all_revealed = {(x, y) for x, y, _ in vis_tiles}
                     newly_revealed = self.spatial.mark_revealed(all_revealed)
                     if newly_revealed:

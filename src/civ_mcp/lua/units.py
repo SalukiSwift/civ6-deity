@@ -24,6 +24,7 @@ def build_units_query() -> str:
     """InGame context: lists all units with upgrade and builder improvement info."""
     return """
 local id = Game.GetLocalPlayer()
+local pVis = PlayersVisibility[id]
 for i, u in Players[id]:GetUnits():Members() do
     local x, y = u:GetX(), u:GetY()
     if x ~= -9999 then
@@ -72,7 +73,9 @@ for i, u in Players[id]:GetUnits():Members() do
                 for dx = -rng, rng do
                     local tx, ty = x + dx, y + dy
                     local d = Map.GetPlotDistance(x, y, tx, ty)
-                    if d >= 1 and d <= rng then
+                    local tPlot = (d >= 1 and d <= rng) and Map.GetPlot(tx, ty) or nil
+                    -- Fair play: only plots currently VISIBLE to the player
+                    if tPlot and pVis:IsVisible(tPlot:GetIndex()) then
                         local plotUnits = Map.GetUnitsAt(tx, ty)
                         if plotUnits then
                             for other in plotUnits:Units() do
@@ -443,8 +446,12 @@ def build_attack_followup_query(target_x: int, target_y: int) -> str:
     """
     return f"""
 local found = false
+local _me = Game.GetLocalPlayer()
+local _tp = Map.GetPlot({target_x}, {target_y})
+-- Fair play: enemy details only if the target plot is currently VISIBLE
+local _seen = _tp ~= nil and PlayersVisibility[_me]:IsVisible(_tp:GetIndex())
 for i = 0, 63 do
-    if Players[i] and Players[i]:IsAlive() then
+    if _seen and Players[i] and Players[i]:IsAlive() then
         for _, u in Players[i]:GetUnits():Members() do
             if u:GetX() == {target_x} and u:GetY() == {target_y} then
                 local hp = u:GetMaxDamage() - u:GetDamage()
@@ -508,6 +515,11 @@ local attCS = unitInfo and unitInfo.Combat or 0
 local attRS = unitInfo and unitInfo.RangedCombat or 0
 local isRanged = attRS > 0 and dist > 1
 local effAttCS = isRanged and attRS or attCS
+-- Fair play: enemy details only if the target plot is currently VISIBLE
+local _tgtPlot = Map.GetPlot({target_x}, {target_y})
+if _tgtPlot == nil or not PlayersVisibility[me]:IsVisible(_tgtPlot:GetIndex()) then
+    {_bail(f"ERR:NO_ENEMY|No visible hostile unit at ({target_x},{target_y})")}
+end
 -- Find defender
 local enemy = nil
 local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
@@ -1654,7 +1666,9 @@ for dy = -r, r do
             end
             local hills = plot:IsHills() and "1" or "0"
             local camp = "0"
-            local ii = plot:GetImprovementType()
+            -- improvement (camp) only when VISIBLE, never from fogged memory
+            local ii = -1
+            if vis:IsVisible(plot:GetX(), plot:GetY()) then ii = plot:GetImprovementType() end
             if ii >= 0 then
                 local iInfo = GameInfo.Improvements[ii]
                 if iInfo and iInfo.ImprovementType == "IMPROVEMENT_BARBARIAN_CAMP" then
@@ -1683,7 +1697,7 @@ for dy = -r, r do
                 if #uParts > 0 then units = table.concat(uParts, ";") end
             end
             local cityName = "none"
-            if plot:IsCity() then
+            if plot:IsCity() and vis:IsVisible(plot:GetX(), plot:GetY()) then
                 local cOwner = plot:GetOwner()
                 if cOwner >= 0 and cOwner ~= me then
                     pcall(function()
@@ -1753,6 +1767,12 @@ def build_builder_tasks_query() -> str:
     return """
 local me = Game.GetLocalPlayer()
 local pCities = Players[me]:GetCities()
+local pTech = Players[me]:GetTechs()
+local function resVisible(resEntry)
+    if not resEntry.PrereqTech then return true end
+    local t = GameInfo.Technologies[resEntry.PrereqTech]
+    return t and pTech:HasTech(t.Index)
+end
 
 -- Gather all builders with charges
 local builders = {}
@@ -1839,7 +1859,8 @@ for _, city in pCities:Members() do
                     -- Check for unimproved resource tiles
                     elseif resIdx >= 0 and impIdx < 0 then
                         local resInfo = GameInfo.Resources[resIdx]
-                        if resInfo then
+                        -- only resources whose revealing tech the player has (PrereqTech)
+                        if resInfo and resVisible(resInfo) then
                             local resClass = resInfo.ResourceClassType or ""
                             local resName = resInfo.ResourceType:gsub("RESOURCE_", "")
                             local priority = "normal"

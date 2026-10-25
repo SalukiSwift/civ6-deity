@@ -310,6 +310,7 @@ class TileInfo:
     improvement: str | None
     owner_id: int
     visibility: str = "visible"  # "visible", "revealed", or "unexplored"
+    visible: bool = False  # True only when the plot is currently in view
     is_fresh_water: bool = False
     yields: tuple[int, ...] | None = None  # (food, prod, gold, science, culture, faith)
     units: list[str] | None = None  # visible foreign units, e.g. ["Barbarian WARRIOR"]

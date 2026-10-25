@@ -14,9 +14,6 @@ from civ_mcp.lua._helpers import (
 from civ_mcp.lua.models import (
     DistrictPlacement,
     FogBoundary,
-    OwnershipDelta,
-    StaticMapDump,
-    StaticMapTile,
     WonderPlacement,
     NearbyResource,
     OwnedResource,
@@ -33,12 +30,16 @@ from civ_mcp.lua.models import (
 _SETTLE_PREAMBLE = (
     """
 local allCities = {}
+local _fogVis = PlayersVisibility[Game.GetLocalPlayer()]
 for i = 0, 62 do
     if Players[i] and Players[i]:IsAlive() then
         local cities = Players[i]:GetCities()
         if cities then
             for _, c in cities:Members() do
-                table.insert(allCities, {x=c:GetX(), y=c:GetY()})
+                -- Only cities on plots the player has revealed (fair knowledge)
+                if _fogVis:IsRevealed(Map.GetPlot(c:GetX(), c:GetY()):GetIndex()) then
+                    table.insert(allCities, {x=c:GetX(), y=c:GetY()})
+                end
             end
         end
     end
@@ -111,7 +112,8 @@ _SETTLE_SCORE_BODY = """
                                 local capI = capC and capC:GetID() or -1
                                 for _, pc in pcc:Members() do
                                     local pd = Map.GetPlotDistance(cx, cy, pc:GetX(), pc:GetY())
-                                    if pd > 0 and pd <= 9 then
+                                    -- population only counts for cities currently visible
+                                    if pd > 0 and pd <= 9 and vis:IsVisible(Map.GetPlot(pc:GetX(), pc:GetY()):GetIndex()) then
                                         local raw = pc:GetPopulation() * (10 - pd) / 10
                                         if pc:GetID() == capI then raw = raw * 1.5 end
                                         if pi == me then friendlyP = friendlyP + raw
@@ -164,18 +166,10 @@ for dy = -r, r do
                 local hills = plot:IsHills() and "1" or "0"
                 local river = plot:IsRiver() and "1" or "0"
                 local coastal = plot:IsCoastalLand() and "1" or "0"
-                local owner = plot:GetOwner()
+                -- Live fields (owner/improvement/district/route/yields/units) are
+                -- only read when the plot is VISIBLE; fogged tiles get blanks.
+                local owner = -1
                 local ownerName = ""
-                if owner >= 0 then
-                    local cfg = PlayerConfigurations[owner]
-                    local p = Players[owner]
-                    if cfg and p and p:IsAlive() then
-                        ownerName = Locale.Lookup(cfg:GetCivilizationShortDescription())
-                        if not p:IsMajor() then ownerName = ownerName .. ":CS" end
-                    elseif owner == 63 then
-                        ownerName = "Barbarian"
-                    end
-                end
                 local featureIdx = plot:GetFeatureType()
                 local feature = "none"
                 if featureIdx >= 0 then feature = GameInfo.Features[featureIdx].FeatureType end
@@ -188,17 +182,28 @@ for dy = -r, r do
                     end
                 end
                 local imp = "none"
-                local impIdx = plot:GetImprovementType()
-                if impIdx >= 0 then
-                    imp = GameInfo.Improvements[impIdx].ImprovementType
-                    if plot:IsImprovementPillaged() then imp = imp .. ":PILLAGED" end
-                end
                 local freshWater = "0"
                 local yields = "0,0,0,0,0,0"
                 local unitStr = "none"
                 local visTag = "revealed"
                 if visible then
                     visTag = "visible"
+                    owner = plot:GetOwner()
+                    if owner >= 0 then
+                        local cfg = PlayerConfigurations[owner]
+                        local p = Players[owner]
+                        if cfg and p and p:IsAlive() then
+                            ownerName = Locale.Lookup(cfg:GetCivilizationShortDescription())
+                            if not p:IsMajor() then ownerName = ownerName .. ":CS" end
+                        elseif owner == 63 then
+                            ownerName = "Barbarian"
+                        end
+                    end
+                    local impIdx = plot:GetImprovementType()
+                    if impIdx >= 0 then
+                        imp = GameInfo.Improvements[impIdx].ImprovementType
+                        if plot:IsImprovementPillaged() then imp = imp .. ":PILLAGED" end
+                    end
                     freshWater = plot:IsFreshWater() and "1" or "0"
                     yields = plot:GetYield(0) .. "," .. plot:GetYield(1) .. "," .. plot:GetYield(2) .. "," .. plot:GetYield(3) .. "," .. plot:GetYield(4) .. "," .. plot:GetYield(5)
                     local uParts = {{}}
@@ -239,13 +244,15 @@ for dy = -r, r do
                 end
                 if #myParts > 0 then myUnitStr = table.concat(myParts, ";") end
                 local distName = "none"
-                local distIdx = plot:GetDistrictType()
-                if distIdx >= 0 then
-                    local dInfo = GameInfo.Districts[distIdx]
-                    if dInfo then distName = dInfo.DistrictType end
-                end
                 local routeType = -1
-                pcall(function() routeType = plot:GetRouteType() end)
+                if visible then
+                    local distIdx = plot:GetDistrictType()
+                    if distIdx >= 0 then
+                        local dInfo = GameInfo.Districts[distIdx]
+                        if dInfo then distName = dInfo.DistrictType end
+                    end
+                    pcall(function() routeType = plot:GetRouteType() end)
+                end
                 local moveCost = 1
                 if terrain ~= "TERRAIN_OCEAN" and terrain ~= "TERRAIN_COAST" then
                     if plot:IsHills() then moveCost = 2 end
@@ -309,7 +316,7 @@ end
 for y = 0, h - 1 do
     for x = 0, w - 1 do
         local plot = Map.GetPlot(x, y)
-        if plot and vis:IsRevealed(plot:GetIndex()) and plot:GetOwner() == -1 then
+        if plot and vis:IsRevealed(plot:GetIndex()) and (not vis:IsVisible(plot:GetIndex()) or plot:GetOwner() == -1) then
             local resIdx = plot:GetResourceType()
             if resIdx >= 0 then
                 local res = GameInfo.Resources[resIdx]
@@ -385,7 +392,8 @@ for i = 0, 62 do
         if cities then
             for _, c in cities:Members() do
                 local dist = Map.GetPlotDistance(x, y, c:GetX(), c:GetY())
-                if dist <= 3 then
+                -- Only name cities on plots the player has revealed
+                if dist <= 3 and PlayersVisibility[me]:IsRevealed(Map.GetPlot(c:GetX(), c:GetY()):GetIndex()) then
                     {_bail_lua('"ERR:CANNOT_FOUND|Too close to " .. Locale.Lookup(c:GetName()) .. " (settler at " .. x .. "," .. y .. ", distance " .. dist .. ", need > 3)"')}
                 end
             end
@@ -697,6 +705,8 @@ def build_wonder_advisor_query(city_id: int, wonder_name: str) -> str:
     """
     return f"""
 {_lua_get_city(city_id)}
+local pTech = Players[me]:GetTechs()
+{_LUA_RES_VISIBLE}
 local brow = GameInfo.Buildings["{wonder_name}"]
 if brow == nil then {_bail(f"ERR:WONDER_NOT_FOUND|{wonder_name}")} end
 if not brow.IsWonder then {_bail(f"ERR:NOT_A_WONDER|{wonder_name} is not a wonder")} end
@@ -734,7 +744,7 @@ for _, pIdx in ipairs(plotIndices) do
     local res = plot:GetResourceType()
     if res >= 0 then
       local rInfo = GameInfo.Resources[res]
-      if rInfo then resName = rInfo.ResourceType end
+      if rInfo and resVisible(rInfo) then resName = rInfo.ResourceType end
     end
     local impName = "none"
     local imp = plot:GetImprovementType()
@@ -909,6 +919,11 @@ def parse_map_response(lines: list[str]) -> list[TileInfo]:
                 movement_cost = int(parts[17])
             except ValueError:
                 pass
+        if visibility != "visible":
+            # Defence in depth: a fogged tile never carries live state, even
+            # if a (stale or patched) query emitted it.
+            imp_name, imp_pillaged, unit_list, yields = None, False, None, None
+            owner_name, route_type = None, -1
         tiles.append(
             TileInfo(
                 x=int(x_str),
@@ -920,15 +935,16 @@ def parse_map_response(lines: list[str]) -> list[TileInfo]:
                 is_river=parts[5] == "1",
                 is_coastal=parts[6] == "1",
                 improvement=imp_name,
-                owner_id=int(parts[8]),
+                owner_id=int(parts[8]) if visibility == "visible" else -1,
                 visibility=visibility,
+                visible=visibility == "visible",
                 is_fresh_water=is_fresh_water,
                 yields=yields,
                 units=unit_list,
                 resource_class=resource_class,
                 is_pillaged=imp_pillaged,
                 district=None
-                if (len(parts) <= 13 or parts[13] == "none")
+                if (visibility != "visible" or len(parts) <= 13 or parts[13] == "none")
                 else parts[13],
                 owner_name=owner_name,
                 own_units=own_unit_list,
@@ -1157,220 +1173,6 @@ def parse_purchasable_tiles_response(lines: list[str]) -> list[PurchasableTile]:
                     )
                 )
     return results
-
-
-# ── Strategic map dump (for web replay) ──────────────────────────────────
-
-
-def build_static_map_dump() -> str:
-    """One-time full terrain extraction for strategic map replay.
-
-    Iterates every tile on the map and outputs static terrain data,
-    initial ownership, route types, city positions, and player-civ mapping.
-    Also initializes Lua globals for subsequent delta calls.
-
-    Uses InGame context (execute_write) for broadest API compatibility.
-    """
-    return """
-local w, h = Map.GetGridSize()
-local me = Game.GetLocalPlayer()
-print("SIZE|" .. w .. "|" .. h)
--- Initialize delta tracking globals
-__civmcp_prev_owners = {}
-__civmcp_prev_routes = {}
-for y = 0, h - 1 do
-    local parts = {}
-    for x = 0, w - 1 do
-        local idx = y * w + x
-        local plot = Map.GetPlot(x, y)
-        local terrIdx = plot:GetTerrainType()
-        local featIdx = plot:GetFeatureType()
-        local hills = plot:IsHills() and 1 or 0
-        local river = plot:IsRiver() and 1 or 0
-        local coastal = plot:IsCoastalLand() and 1 or 0
-        local resIdx = plot:GetResourceType()
-        local owner = plot:GetOwner()
-        local routeType = -1
-        if pcall(function() routeType = plot:GetRouteType() end) then else routeType = -1 end
-        __civmcp_prev_owners[idx] = owner
-        __civmcp_prev_routes[idx] = routeType
-        table.insert(parts, terrIdx .. "," .. featIdx .. "," .. hills .. "," .. river .. "," .. coastal .. "," .. resIdx .. "," .. owner .. "," .. routeType)
-    end
-    print("ROW|" .. y .. "|" .. table.concat(parts, "|"))
-end
-for i = 0, 62 do
-    if Players[i] and Players[i]:IsAlive() then
-        for _, c in Players[i]:GetCities():Members() do
-            local name = c:GetName() or ""
-            print("CITY|" .. c:GetX() .. "," .. c:GetY() .. "|" .. i .. "|" .. c:GetPopulation() .. "|" .. name)
-        end
-    end
-end
-local csTypeMap = {}
-csTypeMap["LEADER_MINOR_CIV_SCIENTIFIC"] = "Scientific"
-csTypeMap["LEADER_MINOR_CIV_CULTURAL"] = "Cultural"
-csTypeMap["LEADER_MINOR_CIV_MILITARISTIC"] = "Militaristic"
-csTypeMap["LEADER_MINOR_CIV_RELIGIOUS"] = "Religious"
-csTypeMap["LEADER_MINOR_CIV_TRADE"] = "Trade"
-csTypeMap["LEADER_MINOR_CIV_INDUSTRIAL"] = "Industrial"
-for i = 0, 62 do
-    if Players[i] and Players[i]:IsAlive() then
-        local cfg = PlayerConfigurations[i]
-        if cfg then
-            local civType = cfg:GetCivilizationTypeName() or "UNKNOWN"
-            local csType = ""
-            if not Players[i]:IsMajor() then
-                local leaderType = cfg:GetLeaderTypeName()
-                if leaderType then
-                    local ldr = GameInfo.Leaders[leaderType]
-                    if ldr and ldr.InheritFrom then
-                        csType = csTypeMap[ldr.InheritFrom] or ""
-                    end
-                end
-            end
-            print("PLAYER|" .. i .. "|" .. civType .. "|" .. csType)
-        end
-    end
-end
-print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
-
-
-def parse_static_map_dump(lines: list[str]) -> StaticMapDump:
-    """Parse SIZE|, ROW|, CITY|, PLAYER| lines from build_static_map_dump."""
-    grid_w, grid_h = 0, 0
-    tiles: list[StaticMapTile] = []
-    initial_owners: list[int] = []
-    initial_routes: list[int] = []
-    cities: list[tuple[int, int, int, int]] = []
-    players: list[tuple[int, str, str | None]] = []
-
-    for line in lines:
-        if line.startswith("SIZE|"):
-            parts = line.split("|")
-            grid_w, grid_h = int(parts[1]), int(parts[2])
-        elif line.startswith("ROW|"):
-            parts = line.split("|")
-            # parts[0]="ROW", parts[1]=y, parts[2..]=tile data
-            for tile_str in parts[2:]:
-                vals = tile_str.split(",")
-                if len(vals) >= 8:
-                    tiles.append(
-                        StaticMapTile(
-                            terrain=int(vals[0]),
-                            feature=int(vals[1]),
-                            hills=vals[2] == "1",
-                            river=vals[3] == "1",
-                            coastal=vals[4] == "1",
-                            resource=int(vals[5]),
-                        )
-                    )
-                    initial_owners.append(int(vals[6]))
-                    initial_routes.append(int(vals[7]))
-        elif line.startswith("CITY|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                xy = parts[1].split(",")
-                name = parts[4] if len(parts) >= 5 else ""
-                cities.append(
-                    (int(xy[0]), int(xy[1]), int(parts[2]), int(parts[3]), name)
-                )
-        elif line.startswith("PLAYER|"):
-            parts = line.split("|")
-            if len(parts) >= 3:
-                cs_type = parts[3] if len(parts) >= 4 and parts[3] else None
-                players.append((int(parts[1]), parts[2], cs_type))
-
-    return StaticMapDump(
-        grid_w=grid_w,
-        grid_h=grid_h,
-        tiles=tiles,
-        initial_owners=initial_owners,
-        initial_routes=initial_routes,
-        initial_cities=cities,
-        players=players,
-    )
-
-
-def build_ownership_delta() -> str:
-    """Lightweight per-turn ownership/road delta for strategic map replay.
-
-    Uses Lua globals __civmcp_prev_owners and __civmcp_prev_routes
-    (initialized by build_static_map_dump) for change detection.
-    First call after game load (globals unset) produces a full diff.
-    """
-    return f"""
-local w, h = Map.GetGridSize()
-if not __civmcp_prev_owners then __civmcp_prev_owners = {{}} end
-if not __civmcp_prev_routes then __civmcp_prev_routes = {{}} end
-local ownerChanges = {{}}
-local roadChanges = {{}}
-for y = 0, h - 1 do
-    for x = 0, w - 1 do
-        local idx = y * w + x
-        local plot = Map.GetPlot(x, y)
-        local owner = plot:GetOwner()
-        if owner ~= (__civmcp_prev_owners[idx] or -99) then
-            table.insert(ownerChanges, idx .. "," .. owner)
-            __civmcp_prev_owners[idx] = owner
-        end
-        local routeType = -1
-        pcall(function() routeType = plot:GetRouteType() end)
-        if routeType ~= (__civmcp_prev_routes[idx] or -99) then
-            table.insert(roadChanges, idx .. "," .. routeType)
-            __civmcp_prev_routes[idx] = routeType
-        end
-    end
-end
-if #ownerChanges > 0 then
-    print("OWNERS|" .. table.concat(ownerChanges, "|"))
-end
-if #roadChanges > 0 then
-    print("ROADS|" .. table.concat(roadChanges, "|"))
-end
-for i = 0, 62 do
-    if Players[i] and Players[i]:IsAlive() then
-        for _, c in Players[i]:GetCities():Members() do
-            local name = c:GetName() or ""
-            print("CITY|" .. c:GetX() .. "," .. c:GetY() .. "|" .. i .. "|" .. c:GetPopulation() .. "|" .. name)
-        end
-    end
-end
-print("{SENTINEL}")
-"""
-
-
-def parse_ownership_delta(lines: list[str]) -> OwnershipDelta:
-    """Parse OWNERS|, ROADS|, CITY| lines from build_ownership_delta."""
-    owner_changes: list[tuple[int, int]] = []
-    road_changes: list[tuple[int, int]] = []
-    cities: list[tuple[int, int, int, int]] = []
-
-    for line in lines:
-        if line.startswith("OWNERS|"):
-            for pair in line.split("|")[1:]:
-                vals = pair.split(",")
-                if len(vals) == 2:
-                    owner_changes.append((int(vals[0]), int(vals[1])))
-        elif line.startswith("ROADS|"):
-            for pair in line.split("|")[1:]:
-                vals = pair.split(",")
-                if len(vals) == 2:
-                    road_changes.append((int(vals[0]), int(vals[1])))
-        elif line.startswith("CITY|"):
-            parts = line.split("|")
-            if len(parts) >= 4:
-                xy = parts[1].split(",")
-                name = parts[4] if len(parts) >= 5 else ""
-                cities.append(
-                    (int(xy[0]), int(xy[1]), int(parts[2]), int(parts[3]), name)
-                )
-
-    return OwnershipDelta(
-        owner_changes=owner_changes,
-        road_changes=road_changes,
-        cities=cities,
-    )
 
 
 def build_revealed_tiles_seed_query() -> str:

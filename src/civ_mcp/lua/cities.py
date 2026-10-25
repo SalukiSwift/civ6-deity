@@ -16,6 +16,13 @@ from civ_mcp.lua.models import CityInfo, ProductionOption
 def build_cities_query() -> str:
     return """
 local me = Game.GetLocalPlayer()
+local pVis = PlayersVisibility[me]
+local pTech = Players[me]:GetTechs()
+local function resVisible(resEntry)
+    if not resEntry.PrereqTech then return true end
+    local t = GameInfo.Technologies[resEntry.PrereqTech]
+    return t and pTech:HasTech(t.Index)
+end
 local hashName = {}
 for u in GameInfo.Units() do hashName[u.Hash] = u.UnitType end
 for b in GameInfo.Buildings() do hashName[b.Hash] = b.BuildingType end
@@ -31,8 +38,9 @@ for i, c in Players[me]:GetCities():Members() do
         local h = bq:GetCurrentProductionTypeHash()
         if h == 0 then
             -- Ghost entry (Babylon eureka can obsolete queued items).
-            -- Try to clear it so the city reports as idle.
-            pcall(function() bq:RemoveAt(0) end)
+            -- Read queries never mutate: report idle. build_produce_item
+            -- uses VALUE_EXCLUSIVE, which clears the queue when the player
+            -- sets production, so the ghost entry never blocks anything.
             producing = "nothing"
         else
             producing = hashName[h] or "UNKNOWN"
@@ -64,7 +72,9 @@ for i, c in Players[me]:GetCities():Members() do
         for dy = -3, 3 do for dx = -3, 3 do
             local tx, ty = cx + dx, cy + dy
             local d = Map.GetPlotDistance(cx, cy, tx, ty)
-            if d >= 1 and d <= 3 then
+            local tPlot = (d >= 1 and d <= 3) and Map.GetPlot(tx, ty) or nil
+            -- Fair play: only units on plots currently VISIBLE to the player
+            if tPlot and pVis:IsVisible(tPlot:GetIndex()) then
                 local pu = Map.GetUnitsAt(tx, ty)
                 if pu then for other in pu:Units() do
                     if other:GetOwner() ~= me then
@@ -111,7 +121,7 @@ for i, c in Players[me]:GetCities():Members() do
             local imp = plot:GetImprovementType()
             if res >= 0 and imp < 0 then
                 local resInfo = GameInfo.Resources[res]
-                if resInfo then
+                if resInfo and resVisible(resInfo) then
                     table.insert(unimproved, resInfo.ResourceType:gsub("RESOURCE_","") .. "@" .. px .. "," .. py)
                 end
             end
@@ -175,7 +185,12 @@ def build_city_attack(city_id: int, target_x: int, target_y: int) -> str:
 local cx, cy = pCity:GetX(), pCity:GetY()
 local dist = Map.GetPlotDistance(cx, cy, {target_x}, {target_y})
 local enemy = nil
-local pu = Map.GetUnitsAt({target_x}, {target_y})
+local _tp = Map.GetPlot({target_x}, {target_y})
+local pu = nil
+-- Fair play: only a target on a currently VISIBLE plot can be looked at
+if _tp ~= nil and PlayersVisibility[me]:IsVisible(_tp:GetIndex()) then
+    pu = Map.GetUnitsAt({target_x}, {target_y})
+end
 if pu then for other in pu:Units() do if other:GetOwner() ~= me then enemy = other end end end
 if not enemy then {_bail("ERR:NO_ENEMY|No hostile unit at target tile")} end
 local eInfo = GameInfo.Units[enemy:GetType()]
