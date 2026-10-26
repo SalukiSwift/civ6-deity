@@ -292,6 +292,10 @@ class CityInfo:
     buildings: list[str] = field(
         default_factory=list
     )  # completed buildings (BUILDING_ prefix stripped)
+    # Net amenities as the city panel shows them (negative = unhappy);
+    # None when the query did not report it.
+    amenities_net: int | None = None
+    under_siege: bool = False
 
 
 @dataclass
@@ -532,6 +536,7 @@ class GameNotification:
     y: int
     is_action_required: bool = False
     resolution_hint: str | None = None
+    summary: str = ""  # the panel's longer text, e.g. "Rome has declared war on you."
 
 
 @dataclass
@@ -658,6 +663,7 @@ class ThreatInfo:
     owner_name: str = "Barbarian"
     is_city_state: bool = False
     unit_id: int = 0
+    at_war: bool = False  # barbarian, or a player we are at war with
 
 
 @dataclass

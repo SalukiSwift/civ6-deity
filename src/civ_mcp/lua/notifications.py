@@ -93,7 +93,11 @@ if list then
                 pcall(function() x, y = entry:GetLocation() end)
                 if x == nil then x = -1 end
                 if y == nil then y = -1 end
-                print("NOTIF|" .. typeName .. "|" .. msg .. "|" .. turn .. "|" .. x .. "," .. y)
+                -- The longer line the notification panel shows ("Rome has
+                -- declared war on you."); the game's own text.
+                local summ = ""
+                pcall(function() summ = (entry:GetSummary() or ""):gsub("[|\\n]", " ") end)
+                print("NOTIF|" .. typeName .. "|" .. msg .. "|" .. turn .. "|" .. x .. "," .. y .. "|" .. summ)
                 emitted = emitted + 1
             end
         end)
@@ -126,6 +130,7 @@ def parse_notifications_response(lines: list[str]) -> list[GameNotification]:
                 y=int(y_str),
                 is_action_required=is_action,
                 resolution_hint=hint,
+                summary=parts[5].strip() if len(parts) > 5 else "",
             )
         )
     return notifs

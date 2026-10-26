@@ -6,6 +6,7 @@ import logging
 
 from civ_mcp.lua._helpers import (
     _LUA_CIV_NAME,
+    _LUA_QUEUED_DEST,
     _LUA_RES_VISIBLE,
     SENTINEL,
     _bail,
@@ -31,6 +32,7 @@ def build_units_query() -> str:
 local id = Game.GetLocalPlayer()
 local pVis = PlayersVisibility[id]
 local actErrShown = false
+{QUEUED_DEST}
 for i, u in Players[id]:GetUnits():Members() do
     local x, y = u:GetX(), u:GetY()
     if x ~= -9999 then
@@ -80,13 +82,14 @@ for i, u in Players[id]:GetUnits():Members() do
                     local tx, ty = x + dx, y + dy
                     local d = Map.GetPlotDistance(x, y, tx, ty)
                     local tPlot = (d >= 1 and d <= rng) and Map.GetPlot(tx, ty) or nil
-                    -- Fair play: only plots currently VISIBLE to the player
+                    -- Fair play: only plots currently VISIBLE to the player,
+                    -- and only units the game shows there (not stealthed ones)
                     if tPlot and pVis:IsVisible(tPlot:GetIndex()) then
                         local plotUnits = Map.GetUnitsAt(tx, ty)
                         if plotUnits then
                             for other in plotUnits:Units() do
                                 local otherOwner = other:GetOwner()
-                                if otherOwner ~= id and (otherOwner == 63 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
+                                if otherOwner ~= id and pVis:IsUnitVisible(other) and (otherOwner == 63 or Players[id]:GetDiplomacy():IsAtWarWith(otherOwner)) then
                                     -- LOS check for ranged units (d>1): verify the
                                     -- game engine agrees we can actually fire there.
                                     -- Melee (d==1) doesn't need LOS.
@@ -200,8 +203,8 @@ for i, u in Players[id]:GetUnits():Members() do
             elseif a ~= nil and a ~= ActivityTypes.ACTIVITY_AWAKE then
                 if u:GetFortifyTurns() > 0 then act = "fortified" else act = "busy" end
             end
-            local dest = UnitManager.GetQueuedDestination(u)
-            if dest and Map.IsPlot(dest) then
+            local dest = _queuedDest(u)
+            if dest then
                 local dp = Map.GetPlotByIndex(dest)
                 act = "moving:" .. dp:GetX() .. "," .. dp:GetY()
             end
@@ -219,7 +222,7 @@ for i, u in Players[id]:GetUnits():Members() do
     end
 end
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{QUEUED_DEST}", _LUA_QUEUED_DEST)
 
 
 def build_move_unit(unit_index: int, target_x: int, target_y: int) -> str:
@@ -251,11 +254,16 @@ local fromX, fromY = unit:GetX(), unit:GetY()
 local params = {{}}
 params[UnitOperationTypes.PARAM_X] = {target_x}
 params[UnitOperationTypes.PARAM_Y] = {target_y}
--- Add ATTACK modifier if hostile unit on target tile (needed for civilian capture)
+-- Add ATTACK modifier if hostile unit on target tile (needed for civilian capture).
+-- Fair play: only a unit the player can see counts (visible plot, and the
+-- game shows the unit), so a move into fog or onto a stealthed unit stays a
+-- plain move and does not reveal what is there.
 local hasHostile = false
-if tgtUnits then
+local _mvPlot = Map.GetPlot({target_x}, {target_y})
+local _mvVis = PlayersVisibility[me]
+if tgtUnits and _mvPlot and _mvVis:IsVisible(_mvPlot:GetIndex()) then
     for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then hasHostile = true end
+        if other:GetOwner() ~= me and _mvVis:IsUnitVisible(other) then hasHostile = true end
     end
 end
 if hasHostile then
@@ -282,10 +290,15 @@ def build_unit_position_query(
     diag_block = ""
     if move_target_x is not None and move_target_y is not None:
         diag_block = f"""
--- Diagnose blocked move target
+-- Diagnose blocked move target. Fair play: terrain only for a REVEALED
+-- tile, the owner only for a VISIBLE one (as the map shows them).
 pcall(function()
     local plot = Map.GetPlot({move_target_x}, {move_target_y})
     if not plot then print("DIAG|UNKNOWN|tile does not exist"); return end
+    local dVis = PlayersVisibility[me]
+    if not dVis:IsRevealed(plot:GetIndex()) then
+        print("DIAG|UNREVEALED|unit did not move (tile not revealed)"); return
+    end
     if plot:IsWater() then
         local hasShip = false
         pcall(function()
@@ -299,7 +312,8 @@ pcall(function()
     elseif plot:IsImpassable() then
         print("DIAG|IMPASSABLE|impassable terrain (ice or natural wonder)")
     else
-        local owner = plot:GetOwner()
+        local owner = -1
+        if dVis:IsVisible(plot:GetIndex()) then owner = plot:GetOwner() end
         if owner >= 0 and owner ~= me then
             local atWar = false
             pcall(function() atWar = Players[me]:GetDiplomacy():IsAtWarWith(owner) end)
@@ -334,6 +348,42 @@ if u then print("POS|" .. u:GetX() .. "|" .. u:GetY()) else print("POS|GONE") en
 """
 
 
+def build_queued_destination_query(unit_index: int) -> str:
+    """InGame: the unit's queued multi-turn destination, as the units query reads it.
+
+    Prints ``QUEUED|x,y`` or ``QUEUED|NONE``. Used when a move order left the
+    unit where it was: with a path queued, the move continues when the turn
+    ends (the next tile costs more than the moves it has left).
+    """
+    return f"""
+{_lua_get_unit(unit_index)}
+{_LUA_QUEUED_DEST}
+local qd = _queuedDest(unit)
+if qd then
+    local qp = Map.GetPlotByIndex(qd)
+    print("QUEUED|" .. qp:GetX() .. "," .. qp:GetY())
+else
+    print("QUEUED|NONE")
+end
+print("{SENTINEL}")
+"""
+
+
+def parse_queued_destination(lines: list[str]) -> tuple[int, int] | None:
+    """(x, y) from a QUEUED|x,y line; None for QUEUED|NONE or no line."""
+    for line in lines:
+        if line.startswith("QUEUED|"):
+            val = line.split("|", 1)[1].strip()
+            if "," in val:
+                x, y = val.split(",", 1)
+                try:
+                    return int(x), int(y)
+                except ValueError:
+                    return None
+            return None
+    return None
+
+
 def build_attack_unit(unit_index: int, target_x: int, target_y: int) -> str:
     return f"""
 {_lua_get_unit(unit_index)}
@@ -344,7 +394,8 @@ local dist = Map.GetPlotDistance(ux, uy, {target_x}, {target_y})
 if not PlayersVisibility[me]:IsVisible({target_x}, {target_y}) then
     {_bail(f"ERR:NOT_VISIBLE|({target_x},{target_y}) is not currently visible.")}
 end
--- Find hostile unit on target tile (prefer military over civilian)
+-- Find hostile unit on target tile (prefer military over civilian).
+-- Fair play: only units the game shows on the tile (not stealthed ones).
 local enemy = nil
 local enemyName = "unknown"
 local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
@@ -352,7 +403,7 @@ if tgtUnits then
     local fallback = nil
     local fallbackName = "unknown"
     for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then
+        if other:GetOwner() ~= me and PlayersVisibility[me]:IsUnitVisible(other) then
             local eInfo = GameInfo.Units[other:GetType()]
             local eName = eInfo and eInfo.UnitType or "UNKNOWN"
             local eCombat = eInfo and eInfo.Combat or 0
@@ -487,8 +538,9 @@ def build_attack_followup_query(target_x: int, target_y: int) -> str:
 local found = false
 local _me = Game.GetLocalPlayer()
 local _tp = Map.GetPlot({target_x}, {target_y})
+local _pv = PlayersVisibility[_me]
 -- Fair play: enemy details only if the target plot is currently VISIBLE
-local _seen = _tp ~= nil and PlayersVisibility[_me]:IsVisible(_tp:GetIndex())
+local _seen = _tp ~= nil and _pv:IsVisible(_tp:GetIndex())
 if not _seen then
     print("UNSEEN")
     print("{SENTINEL}")
@@ -497,7 +549,8 @@ end
 for i = 0, 63 do
     if _seen and Players[i] and Players[i]:IsAlive() then
         for _, u in Players[i]:GetUnits():Members() do
-            if u:GetX() == {target_x} and u:GetY() == {target_y} then
+            -- and only units the game shows there (our own always)
+            if u:GetX() == {target_x} and u:GetY() == {target_y} and (i == _me or _pv:IsUnitVisible(u)) then
                 local hp = u:GetMaxDamage() - u:GetDamage()
                 local entry = GameInfo.Units[u:GetType()]
                 local name = entry and entry.UnitType or "UNKNOWN"
@@ -540,7 +593,7 @@ def parse_blocked_diagnostic(lines: list[str]) -> str:
             parts = line.split("|", 2)
             if len(parts) >= 3:
                 return parts[2]
-    return "unit did not move — impassable terrain, border, or no path"
+    return "unit did not move: impassable terrain, border, or no path"
 
 
 def build_combat_estimate_query(unit_index: int, target_x: int, target_y: int) -> str:
@@ -565,12 +618,12 @@ local _tgtPlot = Map.GetPlot({target_x}, {target_y})
 if _tgtPlot == nil or not PlayersVisibility[me]:IsVisible(_tgtPlot:GetIndex()) then
     {_bail(f"ERR:NO_ENEMY|No visible hostile unit at ({target_x},{target_y})")}
 end
--- Find defender
+-- Find defender (only units the game shows: not stealthed ones)
 local enemy = nil
 local tgtUnits = Map.GetUnitsAt({target_x}, {target_y})
 if tgtUnits then
     for other in tgtUnits:Units() do
-        if other:GetOwner() ~= me then
+        if other:GetOwner() ~= me and PlayersVisibility[me]:IsUnitVisible(other) then
             local eInfo = GameInfo.Units[other:GetType()]
             local eCombat = eInfo and eInfo.Combat or 0
             if eCombat > 0 or enemy == nil then enemy = other end
@@ -721,10 +774,15 @@ if not isRanged then
     for dy = -1, 1 do for dx = -1, 1 do
         if dx ~= 0 or dy ~= 0 then
             local sx, sy = {target_x} + dx, {target_y} + dy
-            local adjUnits = Map.GetUnitsAt(sx, sy)
+            -- Fair play: only supporters the player can see
+            local sPlot = Map.GetPlot(sx, sy)
+            local adjUnits = nil
+            if sPlot and PlayersVisibility[me]:IsVisible(sPlot:GetIndex()) then
+                adjUnits = Map.GetUnitsAt(sx, sy)
+            end
             if adjUnits then
                 for adjU in adjUnits:Units() do
-                    if adjU:GetOwner() == enemyOwner and adjU ~= enemy then
+                    if adjU:GetOwner() == enemyOwner and adjU ~= enemy and PlayersVisibility[me]:IsUnitVisible(adjU) then
                         local adjInfo = GameInfo.Units[adjU:GetType()]
                         if adjInfo and (adjInfo.Combat or 0) > 0 then
                             supportBonus = supportBonus + 2
@@ -828,9 +886,11 @@ for pid = 0, 63 do
             -- Fair play: do not name civilizations we have not met
             if cfg then ownerName = civNameFor(pid) end
         end
+        local atWar = (pid == 63 or pDiplo:IsAtWarWith(pid)) and "1" or "0"
         for _, bu in Players[pid]:GetUnits():Members() do
             local bx, by = bu:GetX(), bu:GetY()
-            if bx ~= -9999 and pVis:IsVisible(bx, by) then
+            -- Fair play: visible plot, and the game shows the unit itself
+            if bx ~= -9999 and pVis:IsVisible(bx, by) and pVis:IsUnitVisible(bu) then
                 local uType = bu:GetType()
                 if uType then
                     local entry = GameInfo.Units[uType]
@@ -845,7 +905,7 @@ for pid = 0, 63 do
                         local hp = bu:GetMaxDamage() - bu:GetDamage()
                         local brs = entry and entry.RangedCombat or 0
                         local isCS = Players[pid]:IsMajor() and "0" or "1"
-                        print("THREAT|" .. pid .. "|" .. ownerName:gsub("|","/") .. "|" .. name .. "|" .. bx .. "," .. by .. "|" .. hp .. "/" .. bu:GetMaxDamage() .. "|CS:" .. bcs .. "|RS:" .. brs .. "|dist:" .. minDist .. "|cs:" .. isCS .. "|uid:" .. bu:GetID())
+                        print("THREAT|" .. pid .. "|" .. ownerName:gsub("|","/") .. "|" .. name .. "|" .. bx .. "," .. by .. "|" .. hp .. "/" .. bu:GetMaxDamage() .. "|CS:" .. bcs .. "|RS:" .. brs .. "|dist:" .. minDist .. "|cs:" .. isCS .. "|uid:" .. bu:GetID() .. "|war:" .. atWar)
                         found = true
                     end
                 end
@@ -909,13 +969,14 @@ def build_fortify_remaining_units() -> str:
     """
     return """
 local me = Game.GetLocalPlayer()
+{QUEUED_DEST}
 local fortified = 0
 local healed = 0
 local healHash = GameInfo.UnitOperations["UNITOPERATION_HEAL"] and GameInfo.UnitOperations["UNITOPERATION_HEAL"].Hash
 for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
     -- Units on a queued multi-turn move keep it (it runs when the turn ends).
-    if x ~= -9999 and unit:GetMovesRemaining() > 0 and UnitManager.GetQueuedDestination(unit) == nil then
+    if x ~= -9999 and unit:GetMovesRemaining() > 0 and _queuedDest(unit) == nil then
         local info = GameInfo.Units[unit:GetType()]
         local isCombat = info and info.Combat > 0
         if isCombat then
@@ -939,13 +1000,14 @@ for _, unit in Players[me]:GetUnits():Members() do
 end
 print("OK:FORTIFIED|" .. fortified .. " fortified, " .. healed .. " healing")
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{QUEUED_DEST}", _LUA_QUEUED_DEST)
 
 
 def build_skip_remaining_units() -> str:
     """Skip all units with moves remaining (InGame context, stock Skip Turn operation)."""
     return """
 local me = Game.GetLocalPlayer()
+{QUEUED_DEST}
 local count = 0
 local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]
 if skipOp == nil then print("ERR:NO_SKIP_OPERATION"); print("{SENTINEL}"); return end
@@ -953,7 +1015,7 @@ for _, unit in Players[me]:GetUnits():Members() do
     local x = unit:GetX()
     -- Skip Turn cancels a queued multi-turn move (checked live), so leave
     -- moving units alone: their path runs when the turn ends.
-    if x ~= -9999 and unit:GetMovesRemaining() > 0 and UnitManager.GetQueuedDestination(unit) == nil then
+    if x ~= -9999 and unit:GetMovesRemaining() > 0 and _queuedDest(unit) == nil then
         if UnitManager.CanStartOperation(unit, skipOp.Hash, nil, false) then
             UnitManager.RequestOperation(unit, skipOp.Hash)
             count = count + 1
@@ -962,7 +1024,7 @@ for _, unit in Players[me]:GetUnits():Members() do
 end
 print("OK:SKIPPED|" .. count .. " units")
 print("{SENTINEL}")
-""".replace("{SENTINEL}", SENTINEL)
+""".replace("{SENTINEL}", SENTINEL).replace("{QUEUED_DEST}", _LUA_QUEUED_DEST)
 
 
 def build_automate_explore(unit_index: int) -> str:
@@ -1495,7 +1557,7 @@ def parse_threat_scan_response(lines: list[str]) -> list[ThreatInfo]:
         if not line.startswith("THREAT|"):
             continue
         parts = line.split("|")
-        # Format: THREAT|owner_id|owner_name|unit_type|x,y|hp/max|CS:n|RS:n|dist:n|cs:0/1|uid:N
+        # Format: THREAT|owner_id|owner_name|unit_type|x,y|hp/max|CS:n|RS:n|dist:n|cs:0/1|uid:N|war:0/1
         if len(parts) >= 9:
             x_str, y_str = parts[4].split(",")
             hp_str, max_str = parts[5].split("/")
@@ -1509,6 +1571,8 @@ def parse_threat_scan_response(lines: list[str]) -> list[ThreatInfo]:
             uid = 0
             if len(parts) > 10 and parts[10].startswith("uid:"):
                 uid = int(parts[10][4:])
+            # war:1 = barbarian or a player we are at war with
+            at_war = len(parts) > 11 and parts[11] == "war:1"
             threats.append(
                 ThreatInfo(
                     unit_type=parts[3],
@@ -1525,6 +1589,7 @@ def parse_threat_scan_response(lines: list[str]) -> list[ThreatInfo]:
                     and parts[9].startswith("cs:")
                     and parts[9][3:] == "1",
                     unit_id=uid,
+                    at_war=at_war,
                 )
             )
         elif len(parts) >= 7:
@@ -1778,7 +1843,8 @@ for dy = -r, r do
                 for pid = 0, 63 do
                     if pid ~= me and Players[pid] and Players[pid]:IsAlive() then
                         for _, u in Players[pid]:GetUnits():Members() do
-                            if u:GetX() == x and u:GetY() == y then
+                            -- only units the game shows (not stealthed ones)
+                            if u:GetX() == x and u:GetY() == y and vis:IsUnitVisible(u) then
                                 local entry = GameInfo.Units[u:GetType()]
                                 local nm = entry and entry.UnitType or "UNKNOWN"
                                 local ownerLabel = "Barbarian"

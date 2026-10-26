@@ -28,6 +28,18 @@ KINDS = (
     "game",
 )
 
+# The commentary kinds Claude writes with narrate; the rest of KINDS
+# (turn, event, action, load, game) are written by the server itself.
+NARRATE_KINDS = (
+    "plan",
+    "read",
+    "decision",
+    "reaction",
+    "lesson",
+    "pivot",
+    "postmortem",
+)
+
 # Every mutating tool that takes a `why` argument and is logged as an action.
 ACTION_TOOLS: frozenset[str] = frozenset(
     {
@@ -63,6 +75,15 @@ ACTION_TOOLS: frozenset[str] = frozenset(
         "queue_wc_votes",
     }
 )
+
+
+_EM_DASH = re.compile(r"\s*\u2014\s*")
+
+
+def plain_text(text: str) -> str:
+    """Log text without em dashes (upstream messages use them; the log is
+    read by people and should not look machine-written)."""
+    return _EM_DASH.sub(", ", text)
 
 
 @dataclass
@@ -125,6 +146,64 @@ class Broadcast:
         )
         return d
 
+    # -- per-game metadata -------------------------------------------------
+
+    @staticmethod
+    def read_meta(game_dir: Path | None) -> dict:
+        """A game directory's meta.json, or {} when missing or unreadable."""
+        if game_dir is None:
+            return {}
+        path = Path(game_dir) / "meta.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def meta(self) -> dict:
+        """The bound game's meta.json ({} when unbound)."""
+        return self.read_meta(self._game_dir)
+
+    def update_meta(self, **fields) -> dict:
+        """Merge fields into the bound game's meta.json; no-op when unbound."""
+        if self._game_dir is None:
+            return {}
+        data = self.meta()
+        data.update(fields)
+        (self._game_dir / "meta.json").write_text(
+            json.dumps(data, indent=2), encoding="utf-8"
+        )
+        return data
+
+    def latest_game_dir(self) -> Path | None:
+        """The newest campaign game (highest NN in games/index.json) with a
+        meta.json: the current game of a fresh session, before any bind."""
+        games = self.campaign_dir / "games"
+        try:
+            index = json.loads((games / "index.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        best: tuple[int, Path] | None = None
+        for name in index.values() if isinstance(index, dict) else ():
+            d = games / str(name)
+            if not (d / "meta.json").exists():
+                continue
+            try:
+                num = int(str(name).split("-", 1)[0])
+            except ValueError:
+                continue
+            if best is None or num > best[0]:
+                best = (num, d)
+        return best[1] if best else None
+
+    def campaign_game(self) -> tuple[Path, dict] | None:
+        """(dir, meta) of the game a recovery load must return to: the bound
+        game, else the latest one. None when the campaign has no game yet."""
+        d = self._game_dir or self.latest_game_dir()
+        if d is None:
+            return None
+        return d, self.read_meta(d)
+
     # -- writing ---------------------------------------------------------
 
     def append(
@@ -138,17 +217,19 @@ class Broadcast:
         if kind not in KINDS:
             raise ValueError(f"Unknown kind {kind!r}; use one of: {', '.join(KINDS)}")
         entry = Entry(
-            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            # Local time with its offset: log.md shows April's clock, and
+            # log.jsonl keeps a full ISO timestamp.
+            ts=datetime.now().astimezone().isoformat(timespec="seconds"),
             turn=turn,
             kind=kind,
-            text=text,
+            text=plain_text(text),
             meta=dict(meta or {}),
         )
         base = self._game_dir if self._game_dir is not None else self.campaign_dir
         stem = "log" if self._game_dir is not None else "lobby"
         base.mkdir(parents=True, exist_ok=True)
         md = base / f"{stem}.md"
-        line = f"- {entry.ts[11:16]} [{kind}] {text}\n"
+        line = f"- {entry.ts[11:16]} [{kind}] {entry.text}\n"
         with open(md, "a", encoding="utf-8") as f:
             if (
                 self._game_dir is not None
@@ -218,10 +299,15 @@ class Broadcast:
 
     @staticmethod
     def action_text(
-        tool: str, params: dict, result: str, unit_label: str | None = None
+        tool: str,
+        params: dict,
+        result: str,
+        unit_label: str | None = None,
+        city_label: str | None = None,
     ) -> str:
         """One readable log line: who did what, why, and the outcome in plain
-        Civ terms (see humanize_result). The raw result belongs in meta."""
+        Civ terms (see humanize_result). The raw result belongs in meta.
+        unit_label / city_label name the unit or city from the last lists."""
         tx = params.get("target_x", params.get("x"))
         ty = params.get("target_y", params.get("y"))
         target = f" -> ({tx},{ty})" if tx is not None and ty is not None else ""
@@ -232,7 +318,7 @@ class Broadcast:
                 words.append(game_name(str(params["improvement"])))
             detail = " ".join(words) + target
         elif tool in _CITY_TOOLS and params.get("city_id") is not None:
-            subject = f"city #{params['city_id']}"
+            subject = city_label or f"city #{params['city_id']}"
             detail = _CITY_TOOLS[tool]
             if tool == "city_action" and params.get("action"):
                 detail = str(params["action"]).replace("_", " ")
@@ -403,6 +489,14 @@ def humanize_result(tool: str, params: dict, result: str) -> str:
         reason = first.split(":", 1)[1] if ":" in first else first
         reason = re.split(r" - | \(unit still at", reason, maxsplit=1)[0].strip()
         return f"blocked: {reason}" if reason else "blocked"
+    if first.startswith("QUEUED"):
+        xy = _xy(first)
+        where = f" to ({xy[0]},{xy[1]})" if xy else ""
+        return f"path{where} queued, continues next turn"
+    if first.startswith("COUNTER"):
+        # "COUNTER: Rome countered. We give: ... They give: ... The session is open: ..."
+        terms = first.split(":", 1)[1].split(" The session is open", 1)[0].strip()
+        return f"counter-offer: {terms}" if terms else "counter-offer"
     if first.startswith("Error"):
         msg = first[len("Error"):].lstrip(": ").strip()
         code, _, detail = msg.partition("|")
@@ -417,6 +511,19 @@ def humanize_result(tool: str, params: dict, result: str) -> str:
         return f"founded {name}{where}"
     if code == "FORTIFIED":
         return fields[0] if fields else "fortified"
+    if code == "ALREADY_FORTIFIED":
+        return "already fortified"
+    if code == "PROMOTED" and fields:
+        return f"promoted: {game_name(fields[0])}"
+    if code in ("ACCEPTED", "REJECTED", "SENT", "APPOINTED") and fields:
+        return fields[0].strip() or code.lower()
+    if code == "ENVOY_SENT" and fields:
+        return f"envoy sent to {fields[0].strip()}"
+    if code == "UPGRADED" and fields:
+        target = fields[0].split("->")[-1].strip()
+        return f"upgraded to {game_name(target)}"
+    if code == "POLICIES_SET":
+        return "policies set"
     if code == "SLEEPING":
         return "sleeping"
     if code == "ALERT":

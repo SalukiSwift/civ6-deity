@@ -49,7 +49,7 @@ Result: `.venv` with CPython 3.12.13, including `pywin32` and `Pillow` (needed b
 
 ### Windows firewall
 
-At startup the server also starts the web dashboard API (uvicorn) bound to `0.0.0.0:8000`. Windows Defender Firewall may show a prompt for `python.exe` once. The MCP stdio path does not need inbound access, so either answer works for MCP; allow it on private networks only if the dashboard must be reachable from another machine.
+At startup the server also starts the web dashboard API (uvicorn) bound to `127.0.0.1:8000` (the port from `CIV_MCP_WEB_PORT`), so it is reachable from this PC only. A loopback listener needs no inbound firewall rule; if Windows Defender Firewall still shows a prompt for `python.exe`, either answer works.
 
 ## Every session
 
@@ -59,7 +59,7 @@ At startup the server also starts the web dashboard API (uvicorn) bound to `0.0.
 cmd.exe /c start steam://run/289070
 ```
 
-Steam then shows a **"Select launch option"** dialog (DX12 preselected / DX11). Someone has to click Play. Ticking "Always use this option" in that dialog (April's call) would let scripted launches skip it.
+Steam has a **"Select launch option"** dialog (DX12 / DX11). April has ticked "Always use this option" with DX12, so the Steam URL starts the game with no dialog. If the dialog ever comes back (for example after a Steam reset), someone has to click Play, or start the executable directly as below.
 
 Starting the DX12 executable directly skips that dialog (checked 2026-10-25 with Steam running: no dialog, process up at +20 s, port 4318 listening at +25 s):
 
@@ -105,11 +105,11 @@ Nothing needs saving for test runs.
 
 ### Saves
 
-`end_turn` writes one `0_MCP_NNNN.Civ6Save` per turn (the last 8 are kept) to `Documents\My Games\Sid Meier's Civilization VI\Saves\Single`, next to April's own named saves. The game's own per-turn autosaves (`AutoSave_NNNN`) go to `Saves\Single\auto`; `restart_and_load(reason)` without a save name loads the newest of those.
+`end_turn` writes one `0_MCP_NNNN.Civ6Save` per turn (the last 8 are kept) to `Documents\My Games\Sid Meier's Civilization VI\Saves\Single`, next to April's own named saves, and records the name and the turn in the game's `campaign/games/NN-civ/meta.json` (`last_save`, `turn`). The game's own per-turn autosaves (`AutoSave_NNNN`) go to `Saves\Single\auto` and are not used for recovery. A load tool given no save name loads the campaign game's `last_save` (refused if it has none), never the newest file in the shared folders, and every load is checked against the campaign game's identity (`ERROR: WRONG GAME LOADED` otherwise).
 
 ### Crash recovery (`restart_and_load`)
 
-`restart_and_load(reason)` kills the game, relaunches it, waits for the main menu through the tuner (a fresh state list with `FrontEnd` and `MainMenu`, polled every 5 s for up to 6 minutes, with the server's popup watcher, camera and watchdog paused so the game has one tuner client), then clicks through Single Player, Load Game, the save and CONTINUE GAME with OCR (120 s backstop for "Single Player"), and finally polls the port for up to 60 s. `load_save_from_menu` does the same wait (launching the game first if it is closed).
+`restart_and_load(reason, save_name="0_MCP_NNNN")` kills the game, relaunches it, waits for the main menu through the tuner (a fresh state list with `FrontEnd` and `MainMenu`, polled every 5 s for up to 6 minutes, with the server's popup watcher, camera and watchdog paused so the game has one tuner client), then clicks through Single Player, Load Game, the save and CONTINUE GAME with OCR (120 s backstop for "Single Player"), polls the port for up to 60 s, reconnects and compares the loaded game's identity with the campaign game's. `load_save_from_menu` does the same wait (launching the game first if it is closed). The automatic connection-loss recovery (5 failed calls in a row) does the same with the game's `last_save`; it never fires while the game is at the main menu or while `new_game` runs.
 
 Measured 2026-10-25 (game killed on turn 6, `restart_and_load(reason="fix verification")`): launch 23:51:17, process up +2 s, port open +18 s, main menu states after 187.9 s of waiting (about 3 min 26 s after launch), "Single Player" read by OCR 1.0 s later, CONTINUE GAME clicked 45 s after that, port open at once, tool returned after 263.5 s. Result: `Load: Save loading (49s). Steps: Main menu up after 188s (tuner), Clicked Single Player, Clicked Load Game, Clicked Autosaves filter, Selected save AutoSave_0006, Clicked Load Game button, Clicked CONTINUE, FireTuner port open (0s after CONTINUE).`
 

@@ -61,7 +61,7 @@ def test_load_game_save_tool_refuses_empty_reason(monkeypatch):
 
     monkeypatch.setattr(game_lifecycle, "load_game_save", fake)
     for reason in ("", "   "):
-        out = asyncio.run(server.load_game_save(None, "x", reason))
+        out = asyncio.run(server.load_game_save(None, "x", reason=reason))
         assert out.startswith("Error:")
     assert called == []
 
@@ -112,9 +112,12 @@ def test_lifespan_sets_on_load_before_auto_boot():
     assert src.index("gs.on_load = _announce_load") < src.index("await _auto_boot(")
 
 
-def test_restart_retry_is_recorded():
+def test_restart_and_load_checks_identity_instead_of_retrying():
+    """A wrong game is a loud error now (Task 13 fix 4c), not a blind retry
+    of the same save."""
     import inspect
 
     server = _server()
     src = inspect.getsource(server.restart_and_load)
-    assert "(retry: wrong game loaded)" in src
+    assert "(retry: wrong game loaded)" not in src
+    assert "_finish_load(" in src and "_recovery_save(" in src

@@ -246,7 +246,8 @@ for dy = -r, r do
                             local units = Players[i]:GetUnits()
                             if units then
                                 for _, u in units:Members() do
-                                    if u:GetX() == x and u:GetY() == y then
+                                    -- only units the game shows (not stealthed ones)
+                                    if u:GetX() == x and u:GetY() == y and vis:IsUnitVisible(u) then
                                         local entry = GameInfo.Units[u:GetType()]
                                         local ut = entry and entry.UnitType or "UNKNOWN"
                                         local label = ""

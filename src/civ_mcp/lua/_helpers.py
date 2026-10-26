@@ -113,6 +113,16 @@ local function resVisible(resEntry)
     return t and pTech:HasTech(t.Index)
 end"""
 
+# A unit's queued multi-turn destination (plot index) or nil. The game's own
+# UI (WorldInput.lua) trusts the id only after Map.IsPlot, so every query
+# uses this one form. One line, so it also fits the single-line Lua strings.
+_LUA_QUEUED_DEST = (
+    "local function _queuedDest(u) "
+    "local d = UnitManager.GetQueuedDestination(u) "
+    "if d ~= nil and Map.IsPlot(d) then return d end "
+    "return nil end"
+)
+
 # Victory-enabled check — prints VENABLED| lines for each enabled victory type.
 # Yield label table + formatters for trade route yield display.
 # fmtY: format array of {YieldIndex, Amount} objects (from GetOutgoingRoutes).

@@ -240,7 +240,7 @@ def test_humanize_blocked_and_refused():
 
 
 def test_humanize_fallback_is_first_line():
-    assert _h("PROMOTED|PROMOTION_BATTLECRY\nmore") == "PROMOTED|PROMOTION_BATTLECRY"
+    assert _h("SOME_NEW_CODE|PROMOTION_BATTLECRY\nmore") == "SOME_NEW_CODE|PROMOTION_BATTLECRY"
     assert _h("OK something new\nsecond") == "something new"
     assert _h("FAIL no path") == "failed: no path"
     assert _h("") == ""

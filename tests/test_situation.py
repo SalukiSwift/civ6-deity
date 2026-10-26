@@ -39,7 +39,7 @@ def _unit(uid, moves=2.0, busy=False, promo=False):
 def _city(name, building="BUILDING_MONUMENT"):
     return CityInfo(
         city_id=1, name=name, x=0, y=0, population=3, food=2, production=3, gold=1,
-        science=1, culture=1, faith=0, housing=3, amenities=1, turns_to_grow=5,
+        science=1, culture=1, faith=0, housing=6, amenities=1, turns_to_grow=5,
         currently_building=building,
     )
 

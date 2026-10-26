@@ -24,7 +24,7 @@ from civ_mcp import game_launcher, heartbeat
 from civ_mcp.newgame import GAME_SETTINGS, create_game, settings_card, valid_leader
 from civ_mcp.broadcast import (
     ACTION_TOOLS,
-    KINDS,
+    NARRATE_KINDS,
     NOTEBOOK_SECTIONS,
     Broadcast,
     append_notebook_file,
@@ -77,6 +77,9 @@ class AppContext:
     watchdog: GameOverWatchdog
     broadcast: Broadcast
     pause_depth: int = 0  # nesting of _background_paused blocks
+    # True while new_game runs: the game is between the menu and the new
+    # map on purpose, so connection errors must not trigger a recovery.
+    new_game_active: bool = False
 
 
 async def _auto_boot(
@@ -447,6 +450,135 @@ def _loaded_save_name(save_name: str | None, result: str) -> str:
     return m.group(1).strip() if m else "latest autosave"
 
 
+MENU_ERROR = "Error: game is at the main menu; call new_game or load_game_save"
+NEW_GAME_BUSY_ERROR = (
+    "Error: new_game is in progress (the game is between the main menu and "
+    "the new map); wait for it to finish"
+)
+
+
+async def _at_main_menu(conn: Any) -> bool:
+    """A fresh state list shows the main menu (FrontEnd and MainMenu, no InGame)."""
+    from civ_mcp.connection import find_state
+
+    try:
+        states = await conn.query_states(timeout=3.0)
+    except Exception:  # noqa: BLE001 - no answer: not at the menu
+        return False
+    return find_state(states, "InGame") is None and all(
+        find_state(states, n) is not None for n in game_launcher.MENU_STATES
+    )
+
+
+def _recovery_save(bc: Broadcast) -> tuple[str | None, str | None, str | None]:
+    """(save name, expected identity, error) for a load given no save name.
+
+    The save is the campaign game's own last 0_MCP save (written into its
+    meta.json at every end_turn): never the newest file in Saves\\Single,
+    which April's own games and earlier campaign games share.
+    """
+    target = bc.campaign_game()
+    if target is None:
+        return None, None, (
+            "Error: no campaign game found (campaign/games is empty), so there "
+            "is no save to recover. Give save_name explicitly."
+        )
+    game_dir, meta = target
+    save = meta.get("last_save")
+    if not save:
+        return None, meta.get("identity"), (
+            f"Error: game {game_dir.name} has no recorded 0_MCP save yet (one is "
+            "written at every end_turn). Give save_name explicitly."
+        )
+    return str(save), meta.get("identity"), None
+
+
+def _expected_identity(bc: Broadcast) -> tuple[str | None, str]:
+    """(identity hash, game name) a load must return to: the bound game, else
+    the latest campaign game; (None, "") when there is none."""
+    target = bc.campaign_game()
+    if target is None:
+        return None, ""
+    game_dir, meta = target
+    identity = meta.get("identity")
+    if not identity and bc.game_dir == game_dir:
+        identity = bc.identity
+    return identity, game_dir.name
+
+
+# How long a load gets to come back before its identity is read.
+_LOAD_SETTLE_S = 8.0
+_LOAD_RECONNECT_TRIES = 30
+_IDENTITY_TRIES = 3
+_IDENTITY_RETRY_S = 5.0
+
+
+async def _reconnect_after_load(gs: Any, *, settle: bool = False) -> bool:
+    """Reconnect until the game's states are back (a load tears them down)."""
+    if settle:
+        await asyncio.sleep(_LOAD_SETTLE_S)
+    conn = gs.conn
+    for _ in range(_LOAD_RECONNECT_TRIES):
+        try:
+            await conn.reconnect()
+            if conn.gamecore_index is not None and conn.ingame_index is not None:
+                return True
+        except ConnectionError:
+            pass
+        await asyncio.sleep(1)
+    return False
+
+
+async def _live_identity(gs: Any) -> str | None:
+    """Hash of the loaded game's identity, or None when it cannot be read."""
+    for attempt in range(_IDENTITY_TRIES):
+        try:
+            civ, seed = await gs.get_game_identity()
+            if (civ, seed) != ("unknown", 0):
+                return identity_hash(seed)
+        except Exception:  # noqa: BLE001 - the game may still be loading
+            log.debug("identity read after load failed", exc_info=True)
+        if attempt + 1 < _IDENTITY_TRIES:
+            await asyncio.sleep(_IDENTITY_RETRY_S)
+    return None
+
+
+async def _finish_load(
+    ctx: Context,
+    save_name: str,
+    reason: str,
+    expected: str | None,
+    game_name: str,
+) -> str | None:
+    """After a load: check it is the campaign game, then record it there.
+
+    Returns a loud error when the loaded game is a different one (and does
+    not record the load as that game's), else None. With no expected
+    identity (no campaign game yet) the load is recorded as before.
+    """
+    gs = _get_game(ctx)
+    live = await _live_identity(gs)
+    if expected and live and live != expected:
+        log.error(
+            "LOAD: wrong game loaded (%s): expected %s, got %s", save_name, expected, live
+        )
+        return (
+            f"ERROR: WRONG GAME LOADED. '{save_name}' is not a save of the campaign's "
+            f"current game {game_name}. The load was NOT recorded in {game_name}'s "
+            "log. Do not play on: load that game's own save with "
+            f"restart_and_load(reason, save_name=...) (its last 0_MCP save is in "
+            f"campaign/games/{game_name}/meta.json), or tell April."
+        )
+    await _bind_broadcast(ctx)  # the load entry belongs in the loaded game's log
+    gs.record_load(save_name, reason)
+    if expected and live is None:
+        return (
+            "WARNING: could not read the loaded game's identity, so it was not "
+            "checked against the campaign game; call get_game_overview to verify."
+        )
+    return None
+
+
 def _launcher_load_ok(result: str) -> bool:
     """Heuristic: did a launcher (menu/restart) load get as far as loading?"""
     return not (
@@ -486,12 +618,41 @@ async def _bind_broadcast(ctx: Context) -> Broadcast:
             was_bound = bc.game_dir is not None
             civ = civ.lower().removeprefix("civilization_")
             bc.bind_game(identity, civ)
-            _bind_fog(_get_game(ctx), bc)
+            gs = _get_game(ctx)
+            _bind_fog(gs, bc)
+            _seed_high_water(gs, bc)
             if was_bound:
                 bc.append("game", f"new game detected: {civ}")
     except Exception:
         log.warning("Broadcast bind failed", exc_info=True)
     return bc
+
+
+def _record_turn_meta(ctx: Context, gs: Any, new_turn: int | None) -> None:
+    """After a turn advance: the game's own last save and turn into its
+    meta.json, so a later recovery (even in a fresh session) loads this
+    game's save and knows its turn."""
+    fields: dict[str, Any] = {}
+    if new_turn is not None:
+        fields["turn"] = new_turn
+    last = getattr(gs, "_last_autosave", None)
+    if last:
+        fields["last_save"] = last
+    if not fields:
+        return
+    try:
+        _get_broadcast(ctx).update_meta(**fields)
+    except Exception:
+        log.warning("meta.json update failed", exc_info=True)
+
+
+def _seed_high_water(gs: Any, bc: Broadcast) -> None:
+    """A fresh session starts at turn 0: take the bound game's last recorded
+    turn (meta.json, written at every end_turn) so a turn regression after a
+    recovery load is caught from the first end_turn."""
+    turn = bc.meta().get("turn")
+    if isinstance(turn, int) and turn > (getattr(gs, "_high_water_turn", 0) or 0):
+        gs._high_water_turn = turn
 
 
 # Sub-tools that _logged under a different name than the tool the agent called.
@@ -523,6 +684,16 @@ def _unit_label(gs: Any, params: dict[str, Any]) -> str | None:
         return None
     try:
         return gs.unit_label(params["unit_id"])
+    except Exception:  # noqa: BLE001 - a label is a nicety
+        return None
+
+
+def _city_label(gs: Any, params: dict[str, Any]) -> str | None:
+    """'Uruk' for the city an action names, from the last city list."""
+    if params.get("city_id") is None:
+        return None
+    try:
+        return gs.city_label(params["city_id"])
     except Exception:  # noqa: BLE001 - a label is a nicety
         return None
 
@@ -575,44 +746,51 @@ async def _logged(
         )
         await logger.log_error(tool_name, result)
 
-        # Connection-loss recovery: after consecutive failures,
-        # the game has likely crashed. Auto-restart from autosave.
+        # The game is at the menu (or new_game is taking it there) on
+        # purpose: say so, and never count it towards a recovery.
+        life = ctx.request_context.lifespan_context
+        if getattr(life, "new_game_active", False):
+            _logged._conn_errors = 0
+            return NEW_GAME_BUSY_ERROR
+        if await _at_main_menu(_get_game(ctx).conn):
+            _logged._conn_errors = 0
+            return MENU_ERROR
+
+        # Connection-loss recovery: after consecutive failures, the game has
+        # likely crashed. Restart it on the campaign game's own last 0_MCP
+        # save, then check the loaded game is that game before recording it.
         _logged._conn_errors = getattr(_logged, "_conn_errors", 0) + 1
         if _logged._conn_errors >= 5:
-            log.error(
-                "CONNECTION RECOVERY: %d consecutive connection failures "
-                "— triggering restart_and_load",
-                _logged._conn_errors,
-            )
             _logged._conn_errors = 0
+            bc = _get_broadcast(ctx)
+            save, expected, err = _recovery_save(bc)
+            if err is not None:
+                log.error("CONNECTION RECOVERY: not attempted: %s", err)
+                return f"{result}\n(Connection recovery not attempted: {err})"
+            log.error(
+                "CONNECTION RECOVERY: 5 consecutive connection failures, "
+                "restart_and_load %s",
+                save,
+            )
             try:
-                from civ_mcp.autosave import get_autosave_for_turn, get_latest_autosave
-
-                turn_num = logger._turn
-                save = (
-                    get_autosave_for_turn(int(turn_num))
-                    if turn_num
-                    else get_latest_autosave()
-                )
                 gs = _get_game(ctx)
                 async with _background_paused(ctx):
                     restart_result = await game_launcher.restart_and_load(
                         save, gs.conn
                     )
                 log.info("CONNECTION RECOVERY: %s", restart_result)
-                if _launcher_load_ok(restart_result):
-                    gs.record_load(
-                        _loaded_save_name(save, restart_result), "connection lost 5x"
-                    )
-                for rc_attempt in range(30):
-                    try:
-                        await gs.conn.reconnect()
-                        if gs.conn.gamecore_index is not None:
-                            log.info("CONNECTION RECOVERY: reconnected")
-                            break
-                    except ConnectionError:
-                        pass
-                    await asyncio.sleep(1)
+                if not _launcher_load_ok(restart_result):
+                    return f"{result}\n(Connection recovery failed: {restart_result})"
+                if await _reconnect_after_load(gs):
+                    log.info("CONNECTION RECOVERY: reconnected")
+                _, game_name = _expected_identity(bc)
+                note = await _finish_load(
+                    ctx, save, "connection lost 5x", expected, game_name
+                )
+                return (
+                    f"{result}\n(Connection recovery: restarted the game on {save}.)"
+                    + (f"\n{note}" if note else "")
+                )
             except Exception:
                 log.error("CONNECTION RECOVERY: restart failed", exc_info=True)
 
@@ -638,7 +816,11 @@ async def _logged(
             bc.append(
                 "action",
                 Broadcast.action_text(
-                    action_name, params, result, unit_label=_unit_label(gs, params)
+                    action_name,
+                    params,
+                    result,
+                    unit_label=_unit_label(gs, params),
+                    city_label=_city_label(gs, params),
                 ),
                 turn=gs._high_water_turn or None,
                 meta={"result": result},
@@ -1861,7 +2043,10 @@ async def skip_remaining_units(ctx: Context, why: str = "") -> str:
     """Skip all units that still have moves remaining.
 
     Useful after diplomacy encounters invalidate all standing orders.
-    Uses GameCore FinishMoves on each unit — fast, reliable, no async issues.
+    Fortifies (or heals) combat units first, then gives the rest the stock
+    Skip Turn operation, as the unit panel's Skip Turn button does (InGame).
+    Units on a queued multi-turn move are left alone: Skip Turn would cancel
+    their path.
 
     why: Optional one-line reason, shown on the live broadcast.
     """
@@ -2031,7 +2216,11 @@ async def batch_orders(ctx: Context, orders: list[dict], why: str = "") -> str:
             bc.append(
                 "action",
                 Broadcast.action_text(
-                    tool_of[o.kind], params, res, unit_label=_unit_label(gs, params)
+                    tool_of[o.kind],
+                    params,
+                    res,
+                    unit_label=_unit_label(gs, params),
+                    city_label=_city_label(gs, params),
                 ),
                 turn=gs._high_water_turn or None,
                 meta={"result": res},
@@ -2056,12 +2245,13 @@ async def narrate(ctx: Context, kind: str, text: str) -> str:
     decisions, reactions, lessons, pivots and postmortems.
 
     Args:
-        kind: One of plan, read, decision, reaction, lesson, pivot, postmortem
-              (also accepted: turn, event, action, load, game)
+        kind: One of plan, read, decision, reaction, lesson, pivot, postmortem.
+              (turn, event, action, load and game entries are written by the
+              server itself and are refused here.)
         text: What to say, one to three sentences.
     """
-    if kind not in KINDS:
-        return f"Error: unknown kind '{kind}'. Use one of: {', '.join(KINDS)}"
+    if kind not in NARRATE_KINDS:
+        return f"Error: unknown kind '{kind}'. Use one of: {', '.join(NARRATE_KINDS)}"
     if not text.strip():
         return "Error: text required"
     bc = await _bind_broadcast(ctx)
@@ -2297,7 +2487,8 @@ async def end_turn(ctx: Context, summary: str) -> str:
             )
             # Fall through — return the hang message to agent
         else:
-            identity_before = gs._game_identity
+            bc_hang = _get_broadcast(ctx)
+            expected_hang, game_hang = _expected_identity(bc_hang)
             gs._hang_retry_active = True
             try:
                 for attempt in range(1, _MAX_HANG_RETRIES + 1):
@@ -2320,62 +2511,27 @@ async def end_turn(ctx: Context, summary: str) -> str:
                             hang_save, gs.conn
                         )
                     log.info("HANG RECOVERY: restart_and_load: %s", restart_result)
-                    if _launcher_load_ok(restart_result):
-                        gs.record_load(hang_save, "turn hang recovery")
+                    if not _launcher_load_ok(restart_result):
+                        log.error(
+                            "HANG RECOVERY: load failed (attempt %d)", attempt
+                        )
+                        continue  # try the whole cycle again
 
                     # Step 2: Reconnect
-                    conn = gs.conn
-                    reconnected = False
-                    for rc_attempt in range(30):
-                        try:
-                            await conn.reconnect()
-                            if conn.gamecore_index is not None:
-                                reconnected = True
-                                break
-                        except ConnectionError:
-                            pass
-                        await asyncio.sleep(1)
-
-                    if not reconnected:
+                    if not await _reconnect_after_load(gs):
                         log.error(
                             "HANG RECOVERY: could not reconnect (attempt %d)",
                             attempt,
                         )
                         continue  # try the whole cycle again
 
-                    # Step 2b: Verify correct game loaded (with retries).
-                    # The game may still be on the leader screen after
-                    # restart — Lua states exist but game APIs aren't
-                    # fully initialized. Retry the check rather than
-                    # restarting the entire recovery cycle.
-                    if identity_before is not None:
-                        identity_ok = False
-                        for id_check in range(3):
-                            try:
-                                actual = await gs.get_game_identity()
-                                if actual == identity_before:
-                                    identity_ok = True
-                                    break
-                                log.warning(
-                                    "HANG RECOVERY: wrong identity %s vs %s "
-                                    "(check %d/3)",
-                                    actual,
-                                    identity_before,
-                                    id_check + 1,
-                                )
-                            except Exception:
-                                log.debug(
-                                    "HANG RECOVERY: identity check failed "
-                                    "(check %d/3), waiting...",
-                                    id_check + 1,
-                                )
-                            await asyncio.sleep(5)
-                        if not identity_ok:
-                            log.warning(
-                                "HANG RECOVERY: identity check inconclusive "
-                                "— proceeding anyway (attempt %d)",
-                                attempt,
-                            )
+                    # Step 2b: the loaded game must be the campaign game;
+                    # only then is the load recorded in its log.
+                    wrong = await _finish_load(
+                        ctx, hang_save, "turn hang recovery", expected_hang, game_hang
+                    )
+                    if wrong and wrong.startswith("ERROR"):
+                        return wrong
 
                     # Step 3: Reset state flags
                     gs._pending_end_turn = False
@@ -2445,6 +2601,7 @@ async def end_turn(ctx: Context, summary: str) -> str:
             _get_logger(ctx).set_turn(new_turn)
             _get_spatial(ctx).set_turn(new_turn)
             heartbeat.write("playing", turn=new_turn)
+        _record_turn_meta(ctx, gs, int(m.group(1)) if m else None)
         try:
             board = format_situation(await gather_situation(gs))
             result += "\n== Situation ==\n" + board
@@ -3111,45 +3268,91 @@ async def load_save(ctx: Context, save_index: int, reason: str) -> str:
         reason: Required. Why you are loading (logged publicly; repeated loads
                 are treated as save-scumming).
 
-    The game will reload entirely. Wait ~10 seconds after calling this,
-    then use get_game_overview to verify the loaded state.
+    The game reloads entirely; the tool waits for it to come back and checks
+    the loaded game is the campaign game (a different game gives a loud error
+    and is not recorded as that game's load).
     """
     if (err := _require_reason(reason)) is not None:
         return err
     gs = _get_game(ctx)
-    return await _logged(
-        ctx,
-        "load_save",
-        {"save_index": save_index, "reason": reason},
-        lambda: gs.load_save(save_index, reason),
-    )
+    expected, game_name = _expected_identity(_get_broadcast(ctx))
+
+    async def _run():
+        result = await gs.load_save(save_index, reason, record=False)
+        if not _lua_load_ok(result):
+            return result
+        m = re.search(r"Loading save: ([^.]+?)\.", result)
+        name = m.group(1).strip() if m else f"index:{save_index}"
+        await _reconnect_after_load(gs, settle=True)
+        note = await _finish_load(ctx, name, reason, expected, game_name)
+        return _with_load_note(result, note)
+
+    # The reload drops the tuner; keep the pollers off it until it is back.
+    async with _background_paused(ctx):
+        return await _logged(
+            ctx, "load_save", {"save_index": save_index, "reason": reason}, _run
+        )
 
 
 @mcp.tool(annotations={"destructiveHint": True})
-async def load_game_save(ctx: Context, save_name: str, reason: str) -> str:
+async def load_game_save(
+    ctx: Context, save_name: str | None = None, *, reason: str
+) -> str:
     """Load a save file by name. No need to call list_saves first.
 
     Args:
-        save_name: Save name without extension (e.g. "0_MCP_0079",
-                   "0A_GROUND_CONTROL", "AutoSave_0221", "quicksave").
+        save_name: Save name without extension (e.g. "0_MCP_0079"). Leave it
+                   out to load the campaign game's own last 0_MCP save (kept in
+                   its meta.json); refused if that game has none yet.
         reason: Required. Why you are loading (logged publicly; repeated loads
                 are treated as save-scumming).
 
     Tries Lua-based loading first (fast, ~5s). If the save isn't found
     via Lua (common for autosaves/quicksaves), falls back to OCR menu
-    navigation (~90s) after verifying the file exists on disk.
+    navigation (~90s) after verifying the file exists on disk. Afterwards the
+    loaded game is checked against the campaign game: a different game gives
+    a loud error and the load is not recorded as that game's.
     """
     if (err := _require_reason(reason)) is not None:
         return err
     gs = _get_game(ctx)
+    bc = _get_broadcast(ctx)
+    expected, game_name = _expected_identity(bc)
+    if not save_name:
+        save_name, _, err = _recovery_save(bc)
+        if err is not None:
+            return err
+
+    async def _run():
+        result = await gs.load_game_save(save_name, reason, record=False)
+        if not (_lua_load_ok(result) and _launcher_load_ok(result)):
+            return result
+        await _reconnect_after_load(gs, settle=result.startswith("Loading save"))
+        note = await _finish_load(ctx, save_name, reason, expected, game_name)
+        return _with_load_note(result, note)
+
     # The menu fallback waits on the tuner; keep the pollers off it.
     async with _background_paused(ctx):
         return await _logged(
             ctx,
             "load_game_save",
             {"save_name": save_name, "reason": reason},
-            lambda: gs.load_game_save(save_name, reason),
+            _run,
         )
+
+
+def _lua_load_ok(result: str) -> bool:
+    """A GameState load result that got as far as loading."""
+    return not str(result).startswith(("Error", "ERR", "FAILED"))
+
+
+def _with_load_note(result: str, note: str | None) -> str:
+    """A wrong-game error goes first (loud); a warning goes after."""
+    if not note:
+        return result
+    if note.startswith("ERROR"):
+        return f"{note}\n{result}"
+    return f"{result}\n{note}"
 
 
 # ---------------------------------------------------------------------------
@@ -3191,25 +3394,35 @@ async def load_save_from_menu(
 
     Args:
         reason: Required. Why you are loading (logged publicly).
-        save_name: Autosave name (e.g. "AutoSave_0221"). If not provided,
-                   loads the most recent autosave.
+        save_name: Save name (e.g. "0_MCP_0042"). If not provided, loads the
+                   campaign game's own last 0_MCP save (kept in its
+                   meta.json); refused if that game has none yet.
 
     Launches the game if it is not running, waits (up to 6 minutes, through
     the tuner) for the main menu, then clicks through the menus with OCR.
     Takes about 1 minute from the main menu, about 5 from a cold start.
-
-    After loading, wait ~10 seconds then call get_game_overview to verify.
+    The loaded game is then checked against the campaign game.
 
     Requires pyobjc: uv pip install 'civ6-mcp[launcher]'
     """
     if (err := _require_reason(reason)) is not None:
         return err
     gs = _get_game(ctx)
+    bc = _get_broadcast(ctx)
+    expected, game_name = _expected_identity(bc)
+    if not save_name:
+        save_name, _, err = _recovery_save(bc)
+        if err is not None:
+            return err
     async with _background_paused(ctx):
         result = await game_launcher.load_save_from_menu(save_name, gs.conn)
-    if _launcher_load_ok(result):
-        gs.record_load(_loaded_save_name(save_name, result), reason)
-    return result
+        if not _launcher_load_ok(result):
+            return result
+        await _reconnect_after_load(gs)
+        note = await _finish_load(
+            ctx, _loaded_save_name(save_name, result), reason, expected, game_name
+        )
+    return _with_load_note(result, note)
 
 
 @asynccontextmanager
@@ -3248,6 +3461,32 @@ async def _background_paused(ctx: Context):
                 svc.start()
 
 
+def _rebind_trackers(
+    ctx: Context, gs: Any, identity: tuple[str, int] | None, turn: int | None
+) -> None:
+    """Point the logger, spatial tracker and heartbeat at a new game, the way
+    get_game_overview does, with the turn reset (the old game's turn would
+    name the wrong 0_MCP save)."""
+    life = ctx.request_context.lifespan_context
+    logger = getattr(life, "logger", None)
+    spatial = getattr(life, "spatial", None)
+    try:
+        if logger is not None:
+            logger._turn = turn
+        if spatial is not None:
+            spatial._turn = turn
+        if identity is not None and identity != ("unknown", 0):
+            civ, seed = identity
+            if logger is not None:
+                logger.bind_game(civ, seed)
+            if spatial is not None:
+                spatial.bind_game(civ, seed)
+                gs.spatial = spatial
+            heartbeat.bind_game(civ, seed)
+    except Exception:  # noqa: BLE001 - tracking is a nicety
+        log.warning("new_game: tracker rebind failed", exc_info=True)
+
+
 @mcp.tool(annotations={"destructiveHint": True})
 async def new_game(ctx: Context, leader: str, why: str) -> str:
     """Start the fixed new game: Deity, Fractal, Standard size and speed,
@@ -3268,8 +3507,11 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
             f"Error: unknown leader {leader!r}. Check docs/leaders.txt for the "
             "valid LEADER_* names."
         )
-    if (err := _require_reason(why)) is not None:
-        return err
+    if not why or not why.strip():
+        return (
+            "Error: a non-empty `why` is required for new_game. Say why you "
+            "chose this leader; it is logged publicly."
+        )
     bc = _get_broadcast(ctx)
     bc.pending_leader = leader
     bc.append(
@@ -3285,12 +3527,17 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
         + "\nIf needed, create this game from the main menu by hand, then call "
         "get_game_overview."
     )
+    life = ctx.request_context.lifespan_context
+    # The game leaves the map on purpose: no connection-loss recovery now.
+    life.new_game_active = True
     try:
         async with _background_paused(ctx):
             result = await create_game(gs.conn, leader)
     except Exception as e:  # noqa: BLE001 - report, never crash the server
         log.warning("new_game failed", exc_info=True)
         return f"Error: new_game failed: {e}{manual}"
+    finally:
+        life.new_game_active = False
     log.info(
         "new_game %s: ok=%s click=%s timings=%s found=%s",
         leader,
@@ -3317,8 +3564,9 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
     # New identity: resets the per-game state (turn high-water mark, pending
     # end turn, snapshots) left over from any previous game, then seed the
     # high-water mark from the verified turn (1).
+    identity = None
     try:
-        await gs.get_game_identity()
+        identity = await gs.get_game_identity()
     except Exception:  # noqa: BLE001
         log.warning("new_game: identity refresh failed", exc_info=True)
     turn = result.found.get("turn", "")
@@ -3326,6 +3574,9 @@ async def new_game(ctx: Context, leader: str, why: str) -> str:
     gs._pending_end_turn = False
     gs._pending_end_turn_from = None
     gs._end_turn_blocked = False
+    # Loads made in the old game are not this game's save-scum history.
+    gs._save_load_history = []
+    _rebind_trackers(ctx, gs, identity, gs._high_water_turn or None)
 
     # The overview's own difficulty read must agree (it is what the agent sees).
     try:
@@ -3357,8 +3608,11 @@ async def restart_and_load(
 
     Args:
         reason: Required. Why you are loading (logged publicly).
-        save_name: Autosave name (e.g. "AutoSave_0221"). If not provided,
-                   loads the most recent autosave.
+        save_name: Save name (e.g. "0_MCP_0042"). If not provided, loads the
+                   campaign game's own last 0_MCP save (written into its
+                   meta.json at every end_turn); refused if it has none yet.
+                   Never the newest file in Saves\\Single, which other games
+                   share.
 
     This is the recommended tool for recovering from game hangs (e.g. AI turn
     processing stuck in infinite loop). Takes about 5 minutes:
@@ -3368,70 +3622,30 @@ async def restart_and_load(
     4. Waits for the main menu through the tuner (the intro movies take
        3 to 4 minutes; up to 6 minutes allowed)
     5. Navigates menus via OCR to load the save (~50s)
+    6. Checks the loaded game is the campaign game (a different game gives a
+       loud error and is not recorded as that game's load)
 
-    After completion, wait ~10 seconds then call get_game_overview to verify.
+    After completion, call get_game_overview to verify.
     """
     if (err := _require_reason(reason)) is not None:
         return err
     gs = _get_game(ctx)
-    identity_before = gs._game_identity
+    bc = _get_broadcast(ctx)
+    expected, game_name = _expected_identity(bc)
+    if not save_name:
+        save_name, _, err = _recovery_save(bc)
+        if err is not None:
+            return err
 
     async with _background_paused(ctx):
         result = await game_launcher.restart_and_load(save_name, gs.conn)
-    if _launcher_load_ok(result):
-        gs.record_load(_loaded_save_name(save_name, result), reason)
-
-    # Reconnect and verify correct game loaded
-    conn = gs.conn
-    for attempt in range(30):
-        try:
-            await conn.reconnect()
-            if conn.gamecore_index is not None:
-                break
-        except ConnectionError:
-            pass
-        await asyncio.sleep(1)
-
-    if conn.gamecore_index is not None and identity_before is not None:
-        try:
-            actual = await gs.get_game_identity()
-            if actual != identity_before:
-                log.warning(
-                    "restart_and_load: wrong game loaded "
-                    "(expected %s, got %s) — retrying",
-                    identity_before,
-                    actual,
-                )
-                async with _background_paused(ctx):
-                    result2 = await game_launcher.restart_and_load(save_name, conn)
-                if _launcher_load_ok(result2):
-                    gs.record_load(
-                        _loaded_save_name(save_name, result2),
-                        reason + " (retry: wrong game loaded)",
-                    )
-                for attempt in range(30):
-                    try:
-                        await conn.reconnect()
-                        if conn.gamecore_index is not None:
-                            break
-                    except ConnectionError:
-                        pass
-                    await asyncio.sleep(1)
-                try:
-                    actual2 = await gs.get_game_identity()
-                    if actual2 != identity_before:
-                        return (
-                            f"{result2} | WARNING: Wrong game loaded "
-                            f"(expected {identity_before[0]}, "
-                            f"got {actual2[0]}). Manual recovery needed."
-                        )
-                except Exception:
-                    pass
-                return f"{result2} | Reloaded after wrong-game detection."
-        except Exception:
-            log.debug("Post-load identity check failed", exc_info=True)
-
-    return result
+        if not _launcher_load_ok(result):
+            return result
+        await _reconnect_after_load(gs)
+        note = await _finish_load(
+            ctx, _loaded_save_name(save_name, result), reason, expected, game_name
+        )
+    return _with_load_note(result, note)
 
 
 async def _narrate(

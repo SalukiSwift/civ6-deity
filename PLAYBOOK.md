@@ -22,8 +22,8 @@ You are Claude, playing Civilization VI on Deity through this repo's MCP tools, 
 4. `get_situation` for the board.
 5. The viewer is at `http://127.0.0.1:8000/` (port from `CIV_MCP_WEB_PORT`).
 6. The game must be launched with Steam's DX12 option (already set to always).
-7. After a crash or a closed game: `restart_and_load(reason, save_name="0_MCP_NNNN")` (or `restart_and_load(reason)` for the latest autosave), then say so in a `narrate` entry. It takes about 5 minutes (the intro movies hold the main menu back for 3 to 4 minutes); wait for it. Never load to undo something that went badly.
-8. No game exists yet (main menu): `new_game(leader, why)` creates the Deity Fractal Standard game from the main menu; if it cannot, it returns the settings for April to click.
+7. After a crash or a closed game: `restart_and_load(reason, save_name="0_MCP_NNNN")` with the game's own last save, `last_save` in its `meta.json` (written at every `end_turn`), then say so in a `narrate` entry. It takes about 5 minutes (the intro movies hold the main menu back for 3 to 4 minutes); wait for it. The tool checks that the loaded game is this campaign game; `ERROR: WRONG GAME LOADED` means stop and tell April. Never load to undo something that went badly.
+8. No game exists yet (main menu; game tools then answer "game is at the main menu"): `new_game(leader, why)` creates the Deity Fractal Standard game from the main menu; if it cannot, it returns the settings for April to click.
 
 ## Turn loop
 
@@ -60,7 +60,7 @@ Full upstream notes are in `docs/upstream-AGENTS.md` for reference. The rules th
 8. Buy religious units only in cities where your religion is the majority.
 9. Never delete Great People (0 charges is normal). Activate them on a matching completed district.
 10. Call `get_map_area` with radius 2 before moving civilians. Forest and hills movement costs stack.
-11. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept; they are written to `Saves\Single` (next to April's own named saves), not `Saves\Single\auto`, which holds the game's own `AutoSave_NNNN` files. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
+11. Recovery loads the game's own last `0_MCP_NNNN` save (`last_save` in `campaign/games/NN-civ/meta.json`): `load_game_save(save_name="0_MCP_NNNN", reason=...)` while the game runs, or `restart_and_load(reason, save_name="0_MCP_NNNN")` after a crash. Save names have no extension. The server writes one `0_MCP_NNNN` save per turn and keeps the last 8, in `Saves\Single` next to April's own named saves; the game's own `AutoSave_NNNN` files in `Saves\Single\auto` are never used for recovery. Every load is checked against the campaign game (`ERROR: WRONG GAME LOADED`: stop and tell April). A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
 
 Also: `get_tech_civics` flags items 2 turns or fewer away as "!! GRAB THIS"; take those.
 

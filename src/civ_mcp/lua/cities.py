@@ -50,8 +50,13 @@ for i, c in Players[me]:GetCities():Members() do
     local amNeed = 0
     pcall(function() amNeed = g:GetAmenitiesNeeded() end)
     local amTotal = amNeed + g:GetAmenities()
+    -- Net amenities as the city panel shows them (CitySupport.lua:
+    -- GetAmenities() - GetAmenitiesNeeded()); "?" if the read fails.
+    local amNet = "?"
+    pcall(function() amNet = tostring(math.floor(g:GetAmenities() - g:GetAmenitiesNeeded())) end)
     -- City defense info
     local defStr, garHP, garMax, wallHP, wallMax = 0, 0, 0, 0, 0
+    local sieged = "0"
     local ccIdx = GameInfo.Districts["DISTRICT_CITY_CENTER"].Index
     for _, d in c:GetDistricts():Members() do
         if d:GetType() == ccIdx then
@@ -62,6 +67,8 @@ for i, c in Players[me]:GetCities():Members() do
                 wallMax = d:GetMaxDamage(DefenseTypes.DISTRICT_OUTER) or 0
                 wallHP = wallMax - (d:GetDamage(DefenseTypes.DISTRICT_OUTER) or 0)
             end)
+            -- Under siege, as the city panel reads it (CitySupport.lua: IsUnderSiege)
+            pcall(function() if d:IsUnderSiege() then sieged = "1" end end)
             break
         end
     end
@@ -72,11 +79,12 @@ for i, c in Players[me]:GetCities():Members() do
             local tx, ty = cx + dx, cy + dy
             local d = Map.GetPlotDistance(cx, cy, tx, ty)
             local tPlot = (d >= 1 and d <= 3) and Map.GetPlot(tx, ty) or nil
-            -- Fair play: only units on plots currently VISIBLE to the player
+            -- Fair play: only units on plots currently VISIBLE to the player,
+            -- and only units the game shows there (not stealthed ones)
             if tPlot and pVis:IsVisible(tPlot:GetIndex()) then
                 local pu = Map.GetUnitsAt(tx, ty)
                 if pu then for other in pu:Units() do
-                    if other:GetOwner() ~= me then
+                    if other:GetOwner() ~= me and pVis:IsUnitVisible(other) then
                         local eInfo = GameInfo.Units[other:GetType()]
                         local eName = eInfo and eInfo.UnitType or "UNKNOWN"
                         local eHP = other:GetMaxDamage() - other:GetDamage()
@@ -161,7 +169,7 @@ for i, c in Players[me]:GetCities():Members() do
             end
         end
     end
-    print(c:GetID() .. "|" .. nm .. "|" .. c:GetX() .. "," .. c:GetY() .. "|" .. c:GetPopulation() .. "|" .. string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f", c:GetYield(0), c:GetYield(1), c:GetYield(2), c:GetYield(3), c:GetYield(4), c:GetYield(5)) .. "|" .. string.format("%.1f", g:GetHousing()) .. "|" .. amTotal .. "|" .. g:GetTurnsUntilGrowth() .. "|" .. producing .. "|" .. turnsLeft .. "|" .. defStr .. "|" .. garHP .. "/" .. garMax .. "|" .. wallHP .. "/" .. wallMax .. "|" .. table.concat(cityTargets, ";") .. "|" .. table.concat(pillDistricts, ";") .. "|" .. table.concat(distLocs, ";") .. "|" .. string.format("%.1f|%.1f|%.1f|%d", loy, loyMax, loyPT, loyFlip) .. "|" .. string.format("%.1f|%.1f|%d", g:GetFoodSurplus(), g:GetFood(), g:GetGrowthThreshold()) .. "|" .. table.concat(pillBuildings, ";") .. "|" .. garrisonUnit)
+    print(c:GetID() .. "|" .. nm .. "|" .. c:GetX() .. "," .. c:GetY() .. "|" .. c:GetPopulation() .. "|" .. string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f", c:GetYield(0), c:GetYield(1), c:GetYield(2), c:GetYield(3), c:GetYield(4), c:GetYield(5)) .. "|" .. string.format("%.1f", g:GetHousing()) .. "|" .. amTotal .. "|" .. g:GetTurnsUntilGrowth() .. "|" .. producing .. "|" .. turnsLeft .. "|" .. defStr .. "|" .. garHP .. "/" .. garMax .. "|" .. wallHP .. "/" .. wallMax .. "|" .. table.concat(cityTargets, ";") .. "|" .. table.concat(pillDistricts, ";") .. "|" .. table.concat(distLocs, ";") .. "|" .. string.format("%.1f|%.1f|%.1f|%d", loy, loyMax, loyPT, loyFlip) .. "|" .. string.format("%.1f|%.1f|%d", g:GetFoodSurplus(), g:GetFood(), g:GetGrowthThreshold()) .. "|" .. table.concat(pillBuildings, ";") .. "|" .. garrisonUnit .. "|" .. amNet .. "|" .. sieged)
     if #unimproved > 0 or #pillImprov > 0 then
         -- ";" between entries: each entry (NAME@x,y) has a comma of its own
         print("CITYTILES|" .. c:GetID() .. "|" .. table.concat(unimproved, ";") .. "|" .. table.concat(pillImprov, ";"))
@@ -191,7 +199,9 @@ local pu = nil
 if _tp ~= nil and PlayersVisibility[me]:IsVisible(_tp:GetIndex()) then
     pu = Map.GetUnitsAt({target_x}, {target_y})
 end
-if pu then for other in pu:Units() do if other:GetOwner() ~= me then enemy = other end end end
+if pu then for other in pu:Units() do
+    if other:GetOwner() ~= me and PlayersVisibility[me]:IsUnitVisible(other) then enemy = other end
+end end
 if not enemy then {_bail("ERR:NO_ENEMY|No hostile unit at target tile")} end
 local eInfo = GameInfo.Units[enemy:GetType()]
 local eName = eInfo and eInfo.UnitType or "UNKNOWN"
@@ -717,6 +727,13 @@ def _tile_entries(raw: str) -> list[str]:
     return [f"{n}@{x},{y}" for n, x, y in _TILE_ENTRY.findall(raw)]
 
 
+def _opt_int(s: str) -> int | None:
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
 def parse_cities_response(lines: list[str]) -> tuple[list[CityInfo], list[str]]:
     """Returns (cities, distance_lines) where distance_lines are 'A|B|N' strings."""
     cities = []
@@ -800,6 +817,8 @@ def parse_cities_response(lines: list[str]) -> tuple[list[CityInfo], list[str]]:
                     b for b in (parts[28].split(";") if len(parts) > 28 else []) if b
                 ],
                 garrison_unit=parts[29] if len(parts) > 29 else "",
+                amenities_net=_opt_int(parts[30]) if len(parts) > 30 else None,
+                under_siege=len(parts) > 31 and parts[31] == "1",
             )
         )
         city_by_id[cities[-1].city_id] = cities[-1]

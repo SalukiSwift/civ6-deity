@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from civ_mcp import lua as lq
 from civ_mcp.lua.models import (
     CityInfo,
+    GameNotification,
     GameOverview,
     RivalRow,
     ThreatInfo,
@@ -51,6 +52,8 @@ class Situation:
     trade_capacity: tuple[int, int] = (0, 0)  # (used, capacity)
     envoys_available: int = 0
     governor_titles: int = 0
+    # Active notifications (the panel's list): war declarations, denouncements.
+    notifications: list[GameNotification] = field(default_factory=list)
     unavailable: list[str] = field(default_factory=list)  # failed sub-queries
 
 
@@ -87,11 +90,28 @@ def _empire(s: Situation) -> list[str]:
     ov = s.overview
     civ = f"{ov.civ_name} ({ov.leader_name})" if ov.leader_name else ov.civ_name
     era = f" {ov.era_name}" if ov.era_name else ""
-    return [
+    lines = [
         f"  T{ov.turn}{era} | {civ} | score {ov.score} | {ov.num_cities} cities, {ov.num_units} units",
         f"  gold {ov.gold:.0f} ({ov.gold_per_turn:+.0f}/t) | science {ov.science_yield:.0f}"
         f" | culture {ov.culture_yield:.0f} | faith {ov.faith:.0f}",
     ]
+    if ov.era_dark_threshold or ov.era_golden_threshold:
+        # As the era panel shows it: below the dark threshold is a Dark Age,
+        # at or above the golden one a Golden Age.
+        lines.append(
+            f"  era score {ov.era_score} (dark < {ov.era_dark_threshold},"
+            f" golden >= {ov.era_golden_threshold})"
+        )
+    return lines
+
+
+def _unhappy(c: CityInfo) -> bool:
+    return c.amenities_net is not None and c.amenities_net < 0
+
+
+def _housing_tight(c: CityInfo) -> bool:
+    # Growth slows once population is within one of housing.
+    return c.housing > 0 and c.housing <= c.population + 1
 
 
 def _attention(s: Situation) -> list[str]:
@@ -122,20 +142,68 @@ def _attention(s: Situation) -> list[str]:
     promo = [_unit_label(u) for u in s.units if u.needs_promotion]
     if promo:
         out.append(f"promotions available: {_ids(promo)}")
+    # can_upgrade is the game's own "can upgrade now" check (gold included).
+    ups = [
+        f"{_unit_label(u)} -> {unit_type_name(u.upgrade_target)}" if u.upgrade_target
+        else _unit_label(u)
+        for u in s.units
+        if u.can_upgrade
+    ]
+    if ups:
+        out.append(f"upgrades available: {_ids(ups)}")
+    unhappy = [f"{c.name} {c.amenities_net:+d}" for c in s.cities if _unhappy(c)]
+    if unhappy:
+        out.append(f"amenities short: {', '.join(unhappy)}")
+    tight = [
+        f"{c.name} (pop {c.population}, housing {c.housing:.0f})"
+        for c in s.cities
+        if _housing_tight(c)
+    ]
+    if tight:
+        out.append(f"housing low: {', '.join(tight)}")
     if any(u.activity == "?" for u in s.units):
         # The activity read failed: the idle list may include busy units.
         out.insert(0, "(unit activity unavailable)")
     for name in s.unavailable:
-        if name not in ("threats", "rivals"):
+        if name not in _THREAT_QUERIES:
             out.insert(0, f"(unavailable: {name})")
     return [f"  {line}" for line in out]
 
 
+# Sub-queries whose failure is reported in THREATS (or RIVALS), not ATTENTION.
+_THREAT_QUERIES = ("threats", "rivals", "notifications")
+_WAR_TYPES = ("NOTIFICATION_DECLARE_WAR", "NOTIFICATION_DECLARE_WAR_CITY_STATE")
+
+
+def _notice_text(n: GameNotification) -> str:
+    return (n.summary or n.message).strip().rstrip(".")
+
+
+def _diplo_threats(s: Situation) -> list[str]:
+    """War declarations and denouncements from the notification panel."""
+    out: list[str] = []
+    for n in s.notifications:
+        words = f"{n.message} {n.summary}".lower()
+        if n.type_name in _WAR_TYPES or ("declar" in words and "war" in words):
+            out.append(f"war declared: {_notice_text(n)}")
+        elif "DENOUNCE" in n.type_name or "denounc" in words:
+            out.append(f"denounced: {_notice_text(n)}")
+    return list(dict.fromkeys(out))  # the panel can repeat an entry
+
+
 def _threats(s: Situation) -> list[str]:
+    out = [f"  {line}" for line in _diplo_threats(s)]
+    if "notifications" in s.unavailable:
+        out.append("  (unavailable: notifications)")
+    sieged = [c.name for c in s.cities if c.under_siege]
+    if sieged:
+        out.append(f"  cities under siege: {', '.join(sieged)}")
     if "threats" in s.unavailable:
-        return ["  (unavailable: threats)"]
-    rows = sorted(s.threats, key=lambda t: t.distance)
-    return [
+        return out + ["  (unavailable: threats)"]
+    # Only units that can attack us now: barbarians and players at war.
+    hostile = [t for t in s.threats if t.owner_id == 63 or t.at_war]
+    rows = sorted(hostile, key=lambda t: t.distance)
+    return out + [
         f"  {t.owner_name} {t.unit_type.replace('UNIT_', '')} at ({t.x},{t.y})"
         f" hp {t.hp}/{t.max_hp} dist {t.distance}"
         for t in rows
@@ -211,6 +279,16 @@ async def _safe(coro, default, what: str, failed: list[str]):
         return default
 
 
+async def _safe_call(fn, default, what: str, failed: list[str]):
+    """Like _safe, but builds the coroutine inside the guard."""
+    try:
+        return await fn()
+    except Exception:
+        log.warning("situation: %s query failed", what, exc_info=True)
+        failed.append(what)
+        return default
+
+
 async def gather_situation(gs: GameState) -> Situation:
     overview = await gs.get_game_overview()
     failed: list[str] = []
@@ -233,6 +311,9 @@ async def gather_situation(gs: GameState) -> Situation:
     trade = await _safe(gs.get_trade_routes(), None, "trade", failed)
     envoys = await _safe(gs.get_city_states(), None, "envoys", failed)
     govs = await _safe(gs.get_governors(), None, "governors", failed)
+    notifications = await _safe_call(
+        lambda: gs.get_notifications(), [], "notifications", failed
+    )
     return Situation(
         overview=overview,
         units=units,
@@ -244,5 +325,6 @@ async def gather_situation(gs: GameState) -> Situation:
         trade_capacity=(trade.active_count, trade.capacity) if trade else (0, 0),
         envoys_available=envoys.tokens_available if envoys else 0,
         governor_titles=govs.points_available if govs else 0,
+        notifications=notifications,
         unavailable=failed,
     )

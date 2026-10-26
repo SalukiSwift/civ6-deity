@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import civ_mcp.narrate as nr
 from civ_mcp import lua as lq
 from civ_mcp.connection import LuaError
+from civ_mcp.lua._helpers import _LUA_QUEUED_DEST
 from civ_mcp.game_lifecycle import cleanup_old_autosaves, save_game
 
 if TYPE_CHECKING:
@@ -509,7 +510,7 @@ def turn_regression_message(gs: GameState, turn_after: int | None) -> str | None
         f"CRITICAL: Turn regressed from {gs._high_water_turn} to {turn_after}. "
         f"You may have loaded the wrong save file. "
         f"Your most recent MCP autosave is {latest_autosave}. "
-        f'Use load_game_save("{latest_autosave}") to recover.'
+        f'Use load_game_save(save_name="{latest_autosave}", reason=...) to recover.'
     )
 
 
@@ -982,6 +983,7 @@ async def execute_end_turn(gs: GameState) -> str:
                     try:
                         check_lua = (
                             f"local me = Game.GetLocalPlayer(); "
+                            f"{_LUA_QUEUED_DEST} "
                             f"local anyMoves = false; "
                             f'local skipOp = GameInfo.UnitOperations["UNITOPERATION_SKIP_TURN"]; '
                             f"for _, u in Players[me]:GetUnits():Members() do "
@@ -992,7 +994,7 @@ async def execute_end_turn(gs: GameState) -> str:
                             f"  for _, u in Players[me]:GetUnits():Members() do "
                             # Never skip a unit on a queued move: Skip Turn
                             # cancels the path (checked live 2026-10-25).
-                            f"    if u:GetX() ~= -9999 and skipOp and UnitManager.GetQueuedDestination(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash, nil, false) then UnitManager.RequestOperation(u, skipOp.Hash); issued = issued + 1 end "
+                            f"    if u:GetX() ~= -9999 and skipOp and _queuedDest(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash, nil, false) then UnitManager.RequestOperation(u, skipOp.Hash); issued = issued + 1 end "
                             f'  end; print(issued > 0 and "AUTO_SKIPPED" or "NOTHING_TO_SKIP") '
                             f'else print("UNITS_NEED_ORDERS") end; '
                             f'print("{lq.SENTINEL}")'
@@ -1428,9 +1430,14 @@ async def execute_end_turn(gs: GameState) -> str:
     # We rely on the game's own AutoSave_NNNN instead.
     from .autosave import saves_work_on_this_platform
 
+    gs._last_autosave = None
     if turn_after is not None and saves_work_on_this_platform():
+        save_name = f"0_MCP_{turn_after:04d}"
         try:
-            await save_game(gs.conn, f"0_MCP_{turn_after:04d}")
+            saved = await save_game(gs.conn, save_name)
+            if saved.startswith("Saved:"):
+                # The server records it in the game's meta.json (last_save).
+                gs._last_autosave = save_name
             cleanup_old_autosaves(keep=8)
         except Exception:
             log.debug("MCP autosave failed for T%s", turn_after, exc_info=True)

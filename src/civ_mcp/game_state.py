@@ -52,6 +52,8 @@ class GameState:
             None  # turn number when ACTION_ENDTURN was sent
         )
         self._high_water_turn: int = 0  # highest turn seen (for regression detection)
+        # The 0_MCP_NNNN save the last end_turn wrote (None if it failed).
+        self._last_autosave: str | None = None
         self._local_player_id: int = 0  # human player (always 0 in single-player)
         self._hang_retry_active: bool = False  # guard against recursive hang recovery
         self._last_game_over: lq.GameOverStatus | None = (
@@ -216,7 +218,23 @@ class GameState:
 
     async def get_cities(self) -> tuple[list[lq.CityInfo], list[str]]:
         lines = await self.conn.execute_write(lq.build_cities_query())
-        return lq.parse_cities_response(lines)
+        cities, distances = lq.parse_cities_response(lines)
+        # Remembered for the broadcast log, which names cities by name.
+        self._city_names = {c.city_id: c.name for c in cities}
+        return cities, distances
+
+    def city_label(self, city_id: object) -> str | None:
+        """'Uruk' for a city id seen in the last city list, else None."""
+        try:
+            cid = int(city_id)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return None
+        names = getattr(self, "_city_names", {})
+        if cid in names:
+            return names[cid]
+        # Tools also accept the per-player index (id % 65536).
+        hits = [n for k, n in names.items() if k % 65536 == cid % 65536]
+        return hits[0] if len(hits) == 1 else None
 
     async def get_map_area(
         self, center_x: int, center_y: int, radius: int = 2
@@ -301,7 +319,18 @@ class GameState:
                             from_y = int(from_match.group(2))
                             if now_x == from_x and now_y == from_y:
                                 # The order was accepted but the unit did not
-                                # move: report a failure, not an OK move.
+                                # move. With a queued path it is a success:
+                                # the next tile costs more than the moves
+                                # left, and the path runs when the turn ends.
+                                queued = await self._queued_destination(unit_index)
+                                if queued is not None:
+                                    qx, qy = queued
+                                    return (
+                                        f"QUEUED: path to ({qx},{qy}) continues next turn "
+                                        f"(unit still at ({now_x},{now_y}); not enough "
+                                        "moves left for the next tile)"
+                                    )
+                                # No path queued: report a failure, not an OK move.
                                 reason = lq.parse_blocked_diagnostic(pos_lines)
                                 return (
                                     f"BLOCKED: {reason} (unit still at "
@@ -365,6 +394,17 @@ class GameState:
             log.debug("Post-move visibility diff failed", exc_info=True)
         return result
 
+    async def _queued_destination(self, unit_index: int) -> tuple[int, int] | None:
+        """The unit's queued move target (InGame, as the units query reads it)."""
+        try:
+            lines = await self.conn.execute_write(
+                lq.build_queued_destination_query(unit_index)
+            )
+        except Exception:
+            log.debug("Queued destination read failed", exc_info=True)
+            return None
+        return lq.parse_queued_destination(lines)
+
     def _remember_post_move(
         self, lines: list[str], vis_tiles: list[tuple[int, int, dict]]
     ) -> None:
@@ -407,7 +447,7 @@ class GameState:
             est_lines = await self.conn.execute_write(est_lua)
             est = lq.parse_combat_estimate(est_lines, 0, 0)
             if est:
-                estimate_str = narrate_combat_estimate(est) + "\n"
+                estimate_str = "\n" + narrate_combat_estimate(est)
         except Exception as e:
             log.debug("Combat estimate failed: %s", e)
         lua = lq.build_attack_unit(unit_index, target_x, target_y)
@@ -437,9 +477,9 @@ class GameState:
 
             if "UNSEEN" in followup:
                 return (
-                    estimate_str
-                    + result
+                    result
                     + "\n  Post-combat: target tile no longer visible; outcome unknown"
+                    + estimate_str
                 )
             try:
                 followup_str = _format_attack_followup(followup, local_id)
@@ -481,7 +521,12 @@ class GameState:
                 result += damage_info + "\n  Post-combat: " + followup_str
             except Exception as e:
                 log.debug("Attack followup formatting failed: %s", e)
-        return estimate_str + result
+        # The outcome comes first (batch_orders and the log read the first
+        # line); a refused attack (NO_MOVES, OUT_OF_RANGE, NO_LOS, ZOC,
+        # STOPPED_SHORT, ...) drops the estimate so it reads as the failure.
+        if result.startswith("Error"):
+            return result
+        return result + estimate_str
 
     async def city_attack(self, city_id: int, target_x: int, target_y: int) -> str:
         lua = lq.build_city_attack(city_id, target_x, target_y)
@@ -1468,7 +1513,9 @@ class GameState:
             ov_lines = await self.conn.execute_write(lq.build_overview_query())
             overview = lq.parse_overview_response(ov_lines)
 
-        unit_lines = await self.conn.execute_read(lq.build_units_query())
+        # The units query is InGame-only (UnitManager reads); in GameCore its
+        # activity read fails and would set the one-time warning falsely.
+        unit_lines = await self.conn.execute_write(lq.build_units_query())
         units = lq.parse_units_response(unit_lines)
 
         city_lines = await self.conn.execute_write(lq.build_cities_query())
@@ -1721,22 +1768,29 @@ class GameState:
 
         return await list_saves(self.conn)
 
-    async def load_save(self, save_index: int, reason: str = "") -> str:
-        """Load a save file by index."""
-        import time
+    async def load_save(
+        self, save_index: int, reason: str = "", *, record: bool = True
+    ) -> str:
+        """Load a save file by index.
+
+        record=False leaves recording to the caller (the server records it
+        only after checking which game was loaded).
+        """
         from civ_mcp.game_lifecycle import load_save
 
         result = await load_save(self.conn, save_index)
-        if not result.startswith(("Error", "ERR", "FAILED")):
+        if record and not result.startswith(("Error", "ERR", "FAILED")):
             self.record_load(f"index:{save_index}", reason)
         return result
 
-    async def load_game_save(self, save_name: str, reason: str = "") -> str:
+    async def load_game_save(
+        self, save_name: str, reason: str = "", *, record: bool = True
+    ) -> str:
         """Load a save file by name (no list_saves prerequisite)."""
         from civ_mcp.game_lifecycle import load_game_save
 
         result = await load_game_save(self.conn, save_name)
-        if not result.startswith(("Error", "ERR", "FAILED")):
+        if record and not result.startswith(("Error", "ERR", "FAILED")):
             self.record_load(save_name, reason)
         return result
 

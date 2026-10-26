@@ -195,9 +195,39 @@ async def _execute(gs: Any, o: Order) -> str:
     return await dispatch_research(gs, o.item, o.kind if o.kind == "civic" else "tech")
 
 
+_FAIL_LINE_PREFIXES = ("Error:", "FAIL", "ERR:")
+
+
 def is_failure(result: str) -> bool:
-    """A game result that reports an order not carried out."""
-    return str(result).strip().startswith(("Error", "BLOCKED"))
+    """A game result that reports an order not carried out.
+
+    The result starts with Error or BLOCKED, or any of its lines starts with
+    Error:, FAIL or ERR: (a multi-line result such as an attack can carry
+    the refusal below other text).
+    """
+    text = str(result).strip()
+    if text.startswith(("Error", "BLOCKED")):
+        return True
+    return any(
+        line.strip().startswith(_FAIL_LINE_PREFIXES) for line in text.splitlines()
+    )
+
+
+def outcome_line(res: str) -> str:
+    """The line of a batch result that says what happened.
+
+    Normally the first line. A combat estimate block ("Combat Estimate ..."
+    and its indented detail lines) is skipped, keeping the OK/FAIL prefix.
+    """
+    lines = str(res).split("\n")
+    head = lines[0]
+    status, _, body = head.partition(" ")
+    if status not in ("OK", "FAIL") or not body.startswith("Combat Estimate"):
+        return head
+    for line in lines[1:]:
+        if line.strip() and not line.startswith(" "):
+            return f"{status} {line.strip()}"
+    return head
 
 
 async def run_orders(
@@ -208,8 +238,9 @@ async def run_orders(
     """Run orders in sequence, continuing past failures.
 
     Each result is 'OK <game result>' or 'FAIL <reason>'. A game result that
-    starts with 'Error' or 'BLOCKED' (a move the game accepted but the unit
-    did not make) counts as a failure.
+    is_failure() flags (it starts with 'Error' or 'BLOCKED', a move the game
+    accepted but the unit did not make, or one of its lines starts with
+    'Error:', 'FAIL' or 'ERR:') counts as a failure.
     """
     results: list[tuple[Order, str]] = []
     for o in orders:
@@ -235,8 +266,7 @@ def format_results(
     """One line per submitted index, in order."""
     lines: dict[int, str] = {}
     for o, res in results:
-        first = res.split("\n", 1)[0]
-        lines[o.index] = f"#{o.index} {first}"
+        lines[o.index] = f"#{o.index} {outcome_line(res)}"
     for e in errors:
         num, _, msg = e.partition(": ")
         lines[int(num[1:])] = f"{num} skipped: {msg}"

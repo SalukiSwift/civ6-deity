@@ -348,7 +348,8 @@ def test_restart_and_load_passes_the_connection_on(monkeypatch):
 
 def test_skip_and_fortify_remaining_leave_queued_moves_alone():
     for q in (lq.build_skip_remaining_units(), lq.build_fortify_remaining_units()):
-        assert "UnitManager.GetQueuedDestination(unit) == nil" in q
+        assert "_queuedDest(unit) == nil" in q
+        assert "local function _queuedDest(u)" in q
 
 
 def test_end_turn_units_blocker_never_skips_a_moving_unit():
@@ -357,7 +358,8 @@ def test_end_turn_units_blocker_never_skips_a_moving_unit():
     from civ_mcp import end_turn
 
     src = inspect.getsource(end_turn.execute_end_turn)
-    assert "UnitManager.GetQueuedDestination(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash" in src
+    assert "_queuedDest(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash" in src
+    assert "{_LUA_QUEUED_DEST}" in src
 
 
 # --- Round 2 -------------------------------------------------------------------
