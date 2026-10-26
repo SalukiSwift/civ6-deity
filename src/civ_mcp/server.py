@@ -3107,12 +3107,14 @@ async def load_game_save(ctx: Context, save_name: str, reason: str) -> str:
     if (err := _require_reason(reason)) is not None:
         return err
     gs = _get_game(ctx)
-    return await _logged(
-        ctx,
-        "load_game_save",
-        {"save_name": save_name, "reason": reason},
-        lambda: gs.load_game_save(save_name, reason),
-    )
+    # The menu fallback waits on the tuner; keep the pollers off it.
+    async with _background_paused(ctx):
+        return await _logged(
+            ctx,
+            "load_game_save",
+            {"save_name": save_name, "reason": reason},
+            lambda: gs.load_game_save(save_name, reason),
+        )
 
 
 # ---------------------------------------------------------------------------
