@@ -84,7 +84,7 @@ def test_format_sections_and_limit():
 
 def test_idle_units_and_empty_production_listed():
     out = format_situation(_situation())
-    assert "idle units: 3, 7" in out
+    assert "idle units: Warrior #3 (1,1), Warrior #7 (1,1)" in out
     assert "no production: Ur" in out
     assert "Uruk" not in out.split("no production:")[1].splitlines()[0]
     assert "envoys to place: 2" in out
@@ -99,7 +99,7 @@ def test_research_not_set_and_promotions():
         units=[_unit(5, promo=True, busy=True)],
     ))
     assert "research/civic not set" in out
-    assert "promotions available: 5" in out
+    assert "promotions available: Warrior #5 (1,1)" in out
     ok = format_situation(_situation())
     assert "research/civic not set" not in ok
 
@@ -203,7 +203,9 @@ def test_parse_units_promotion_flag_and_board_line():
     line = "5|5|Warrior|UNIT_WARRIOR|3,4|2/2|100/100|20|0|0||1|0||0||"
     u = lq.parse_units_response([line])[0]
     assert u.needs_promotion is True
-    assert "promotions available: 5" in format_situation(_situation(units=[u]))
+    assert "promotions available: Warrior #5 (3,4)" in format_situation(
+        _situation(units=[u])
+    )
 
 
 def test_units_query_checks_promote_command():
@@ -241,3 +243,42 @@ def test_cap_with_many_threats_and_attention_lines():
 def test_rivals_none_then_warnings():
     out = format_situation(_situation(rivals=[]))
     assert "RIVALS\n  none\n  !! DIPLOMATIC" in out
+
+
+def test_idle_list_names_type_id_and_position():
+    units = [
+        UnitInfo(unit_id=131073, unit_index=1, name="Warrior", unit_type="UNIT_WARRIOR",
+                 x=62, y=37, moves_remaining=2.0, max_moves=2.0, health=100, max_health=100),
+        UnitInfo(unit_id=196608, unit_index=0, name="Scout", unit_type="UNIT_SCOUT",
+                 x=60, y=33, moves_remaining=3.0, max_moves=3.0, health=100, max_health=100),
+        UnitInfo(unit_id=262145, unit_index=1, name="War-Cart", unit_type="UNIT_SUMERIAN_WAR_CART",
+                 x=59, y=35, moves_remaining=0.0, max_moves=2.0, health=100, max_health=100),
+    ]
+    out = format_situation(_situation(units=units))
+    assert "idle units: Warrior #131073 (62,37), Scout #196608 (60,33)" in out
+    assert "Sumerian War Cart" not in out  # no moves left: not idle
+
+
+def test_moving_units_listed_separately_not_idle():
+    mover = UnitInfo(
+        unit_id=131073, unit_index=1, name="Warrior", unit_type="UNIT_WARRIOR",
+        x=28, y=30, moves_remaining=2.0, max_moves=2.0, health=100, max_health=100,
+        is_busy=True, activity="moving:29,31",
+    )
+    fortified = UnitInfo(
+        unit_id=65537, unit_index=1, name="Slinger", unit_type="UNIT_SLINGER",
+        x=28, y=29, moves_remaining=2.0, max_moves=2.0, health=100, max_health=100,
+        is_busy=True, activity="fortified",
+    )
+    out = format_situation(_situation(units=[mover, fortified]))
+    assert "moving: Warrior #131073 (28,30) to (29,31)" in out
+    assert "idle units" not in out
+    assert "Slinger" not in out
+
+
+def test_long_unit_lists_are_capped():
+    units = [_unit(i) for i in range(30)]
+    out = format_situation(_situation(units=units))
+    line = next(l for l in out.splitlines() if "idle units:" in l)
+    assert line.endswith("(+18 more)")
+    assert len(out.splitlines()) <= 40

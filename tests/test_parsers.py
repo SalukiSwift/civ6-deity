@@ -291,6 +291,36 @@ class TestParseCities:
         cities, _ = parse_cities_response(["too|short"])
         assert len(cities) == 0
 
+    def test_city_tiles_keep_coordinates(self):
+        lines = [self.CITY_LINE, "CITYTILES|0|WHEAT@60,35;WINE@61,36|MINE@6,11"]
+        cities, _ = parse_cities_response(lines)
+        assert cities[0].unimproved_resources == ["WHEAT@60,35", "WINE@61,36"]
+        assert cities[0].pillaged_improvements == ["MINE@6,11"]
+
+    def test_city_tiles_legacy_comma_separator(self):
+        lines = [self.CITY_LINE, "CITYTILES|0|WHEAT@60,35,WINE@61,36|"]
+        cities, _ = parse_cities_response(lines)
+        assert cities[0].unimproved_resources == ["WHEAT@60,35", "WINE@61,36"]
+        assert cities[0].pillaged_improvements == []
+
+    def test_needs_builder_narration(self):
+        from civ_mcp.narrate import narrate_cities
+
+        line = self.CITY_LINE.replace(
+            "DISTRICT_CITY_CENTER;DISTRICT_CAMPUS", "DISTRICT_CITY_CENTER@10,24"
+        )
+        lines = [line, "CITYTILES|0|WHEAT@60,35;WINE@61,36|"]
+        cities, distances = parse_cities_response(lines)
+        out = narrate_cities(cities, distances)
+        assert "Needs builder: WHEAT at (60,35), WINE at (61,36) (unimproved)" in out
+
+    def test_city_tiles_query_uses_semicolons(self):
+        from civ_mcp.lua.cities import build_cities_query
+
+        q = build_cities_query()
+        assert 'table.concat(unimproved, ";")' in q
+        assert 'table.concat(pillImprov, ";")' in q
+
 
 # ---------------------------------------------------------------------------
 # parse_map_response

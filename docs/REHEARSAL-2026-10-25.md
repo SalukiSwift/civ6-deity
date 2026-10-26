@@ -230,7 +230,18 @@ The 30 s Phase 2 scan is upstream's: it visits every Lua state whose name contai
 
 ### D11 (overview land total): fixed, verified live
 
-`get_game_overview` prints the share and our own count only: `Explored: 1% of land (28 land tiles revealed)`. FAIRNESS.md's `get_game_overview` row says so. The other D11 items, D9 and D10 are not in this wave.
+`get_game_overview` prints the share and our own count only: `Explored: 1% of land (28 land tiles revealed)`. FAIRNESS.md's `get_game_overview` row says so.
+
+### Round 2 (unit tests only, no game)
+
+- D9: the cities query joins the "Needs builder" and pillaged-tile entries with `;` and the parser matches whole `NAME@x,y` entries (old `,` lines parse too); `get_cities` prints `Needs builder: WHEAT at (60,35), WINE at (61,36) (unimproved)`.
+- D10: the board names units by type, id and tile: `idle units: Warrior #131073 (62,37), Scout #196608 (60,33)`, the same for `promotions available:`, and units on a queued move get their own line, `moving: Warrior #131073 (28,30) to (29,31)`. Still 12 per line and 40 lines in all.
+- D11a: a move the game accepted but the unit did not make returns `BLOCKED: <reason> (unit still at (x,y), target (x,y))`; `batch_orders` reports it as `FAIL BLOCKED: ...`, the camera does not hop (batch or `unit_action`) and the log says `blocked: water tile`.
+- D11b: `log.md` action lines are plain Civ terms (`Warrior #131073 move -> (62,36): scout => moved to (60,36), still 2 tiles from (62,36)`, `Settler #65536 found city: ... => founded Uruk at (59,35)`, `city #65536 production: ... => now building Monument (5 turns)`, `research: ... => researching Pottery`, `attacked (12,8): enemy at 40 HP`, `refused: Unit cannot sleep`); units are named from the last unit list; `found_city` now returns the city name (`FOUNDED|59,35|Uruk`, read in the same verification query; not yet checked live). `log.jsonl` keeps the raw result in `meta.result`.
+- D11c: the `load` entry names the save the menu navigation opened (`loaded AutoSave_0007: <reason>`).
+- D11d: `get_city_states` skips the Free Cities player (`IsFreeCities`, or civ type `CIVILIZATION_FREE_CITIES`).
+- D11e: RUNTIME.md and PLAYBOOK.md say `0_MCP_NNNN` saves go to `Saves\Single`; the `batch_orders` docstring says `sleep` is refused for melee units.
+- Re-review: the popup watcher, camera and watchdog `start()` is a no-op while its task runs, `stop()` clears it, and `_background_paused` counts nesting so only the outermost block restarts them (a `load_game_save` whose `_logged` call hits the connection-loss recovery nests two blocks). When the units query cannot read activities, `get_units` marks each unit `[activity unknown]` and the board adds `(unit activity unavailable)`.
 
 ## Clean-up done
 

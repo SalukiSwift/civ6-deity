@@ -103,6 +103,10 @@ taskkill.exe /IM CivilizationVI_DX12.exe /F
 
 Nothing needs saving for test runs.
 
+### Saves
+
+`end_turn` writes one `0_MCP_NNNN.Civ6Save` per turn (the last 8 are kept) to `Documents\My Games\Sid Meier's Civilization VI\Saves\Single`, next to April's own named saves. The game's own per-turn autosaves (`AutoSave_NNNN`) go to `Saves\Single\auto`; `restart_and_load(reason)` without a save name loads the newest of those.
+
 ### Crash recovery (`restart_and_load`)
 
 `restart_and_load(reason)` kills the game, relaunches it, waits for the main menu through the tuner (a fresh state list with `FrontEnd` and `MainMenu`, polled every 5 s for up to 6 minutes, with the server's popup watcher, camera and watchdog paused so the game has one tuner client), then clicks through Single Player, Load Game, the save and CONTINUE GAME with OCR (120 s backstop for "Single Player"), and finally polls the port for up to 60 s. `load_save_from_menu` does the same wait (launching the game first if it is closed).

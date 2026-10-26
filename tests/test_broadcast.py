@@ -1,5 +1,6 @@
 """Tests for the broadcast commentary log and its server wiring."""
 
+import json
 import asyncio
 import types
 
@@ -63,7 +64,16 @@ def test_action_text_format():
         },
         "OK: moved\nmore",
     )
-    assert t == "unit_action move #3 -> (12,8): scout river => OK: moved"
+    assert t == "unit #3 move -> (12,8): scout river => moved"
+    labelled = Broadcast.action_text(
+        "unit_action",
+        {"unit_id": 131073, "action": "move", "target_x": 62, "target_y": 36, "why": "scout"},
+        "MOVING_TO|62,36|from:59,36|now_at:60,36|(moved dx:+1 dy:+0)|STOPPED_MID_PATH (moves exhausted)",
+        unit_label="Warrior #131073",
+    )
+    assert labelled == (
+        "Warrior #131073 move -> (62,36): scout => moved to (60,36), still 2 tiles from (62,36)"
+    )
 
 
 def test_kinds_and_action_tools_contract():
@@ -150,7 +160,9 @@ def test_logged_action_binds_hashed_identity_and_logs_turn(tmp_path):
     d = tmp_path / "games" / "01-rome"
     md = (d / "log.md").read_text()
     assert "## Turn 7" in md
-    assert "[action] unit_action fortify #3: hold ridge => OK: moved" in md
+    assert "[action] unit #3 fortify: hold ridge => moved" in md
+    row = json.loads((d / "log.jsonl").read_text().splitlines()[-1])
+    assert row["meta"]["result"] == "OK: moved\nmore"  # raw result kept
     for p in tmp_path.rglob("*"):
         if p.is_file():
             assert "12345" not in p.read_text(), p
@@ -168,3 +180,100 @@ def test_rebind_on_identity_change(tmp_path):
 
 async def _noop(*a, **k):
     return None
+
+
+
+# --- humanize_result (rehearsal round 2, D11b) -------------------------------
+
+from civ_mcp.broadcast import game_name, hex_distance, humanize_result  # noqa: E402
+
+
+def _h(result, tool="unit_action", **params):
+    return humanize_result(tool, params, result)
+
+
+def test_humanize_move_mid_path_and_arrival():
+    raw = "OK MOVING_TO|62,36|from:59,36|now_at:60,36|(moved dx:+1 dy:+0)|STOPPED_MID_PATH (moves exhausted)"
+    assert _h(raw) == "moved to (60,36), still 2 tiles from (62,36)"
+    assert _h("MOVING_TO|61,36|from:59,36|now_at:61,36|(moved dx:+2 dy:+0)") == "moved to (61,36)"
+
+
+def test_humanize_found_city_uses_city_name():
+    assert _h("OK FOUNDED|59,35|Uruk") == "founded Uruk at (59,35)"
+    assert _h("FOUNDED|59,35") == "founded a city at (59,35)"
+
+
+def test_humanize_fortify_production_research_civic():
+    assert _h("OK FORTIFIED") == "fortified"
+    assert _h("PRODUCING|BUILDING_MONUMENT|5 turns", "set_city_production") == (
+        "now building Monument (5 turns)"
+    )
+    assert _h("RESEARCHING|TECH_POTTERY", "set_research") == "researching Pottery"
+    assert _h("PROGRESSING|CIVIC_CODE_OF_LAWS", "set_research") == "civic: Code of Laws"
+    assert _h("PURCHASED|UNIT_SCOUT|cost=120g (had 200g)", "purchase_item") == (
+        "bought Scout for 120 gold"
+    )
+
+
+def test_humanize_attacks():
+    melee = (
+        "Combat Estimate (Melee):\n  WARRIOR vs BARBARIAN\n"
+        "MELEE_ATTACK|target:UNIT_WARRIOR at (12,8)|enemy HP:100 -> 40/100|your HP:100 -> 80 CS:20"
+    )
+    assert _h(melee) == "attacked (12,8): enemy at 40 HP"
+    killed = "MELEE_ATTACK|target:UNIT_SCOUT at (12,8)|enemy HP:30 -> KILLED|your HP:100 -> 95 CS:20"
+    assert _h(killed) == "attacked (12,8): enemy destroyed"
+    ranged = (
+        "RANGE_ATTACK|target:UNIT_WARRIOR at (5,6)|pre_hp:100/100|your HP:100|range:2 dist:2"
+        "|est damage dealt:~30\n  Post-combat: ~70/100 (estimate)"
+    )
+    assert _h(ranged) == "attacked (5,6): enemy at about 70 HP"
+
+
+def test_humanize_blocked_and_refused():
+    blocked = (
+        "FAIL BLOCKED: water tile - land units need Shipbuilding tech to embark "
+        "(unit still at (62,36), target (63,38))"
+    )
+    assert _h(blocked) == "blocked: water tile"
+    assert _h("FAIL Error: CANNOT_SLEEP|Unit cannot sleep") == "refused: Unit cannot sleep"
+
+
+def test_humanize_fallback_is_first_line():
+    assert _h("PROMOTED|PROMOTION_BATTLECRY\nmore") == "PROMOTED|PROMOTION_BATTLECRY"
+    assert _h("OK something new\nsecond") == "something new"
+    assert _h("FAIL no path") == "failed: no path"
+    assert _h("") == ""
+
+
+def test_game_name_and_hex_distance():
+    assert game_name("CIVIC_CODE_OF_LAWS") == "Code of Laws"
+    assert game_name("UNIT_SUMERIAN_WAR_CART") == "Sumerian War Cart"
+    assert game_name("BUILDING_MONUMENT") == "Monument"
+    # Engine neighbours of (28,29): NE (29,30), NW (28,30), SW (28,28).
+    assert hex_distance(28, 29, 29, 30) == 1
+    assert hex_distance(28, 29, 28, 30) == 1
+    assert hex_distance(28, 29, 28, 28) == 1
+    assert hex_distance(28, 29, 27, 30) == 2
+    assert hex_distance(60, 36, 62, 36) == 2
+
+
+def test_found_city_line_names_city_and_settler():
+    t = Broadcast.action_text(
+        "unit_action",
+        {"unit_id": 0, "action": "found_city", "why": "capital in place"},
+        "OK FOUNDED|59,35|Uruk",
+        unit_label="Settler #65536",
+    )
+    assert t == "Settler #65536 found city: capital in place => founded Uruk at (59,35)"
+
+
+def test_research_and_production_lines():
+    assert Broadcast.action_text(
+        "set_research", {"tech_or_civic": "TECH_POTTERY", "category": "tech", "why": "granary"},
+        "RESEARCHING|TECH_POTTERY",
+    ) == "research: granary => researching Pottery"
+    assert Broadcast.action_text(
+        "set_city_production", {"city_id": 65536, "item_name": "UNIT_SCOUT", "why": "explore"},
+        "PRODUCING|UNIT_SCOUT|4 turns",
+    ) == "city #65536 production: explore => now building Scout (4 turns)"

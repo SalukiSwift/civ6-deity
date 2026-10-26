@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from civ_mcp.lua._helpers import (
     _ITEM_PARAM_MAP,
     _ITEM_TABLE_MAP,
@@ -161,7 +163,8 @@ for i, c in Players[me]:GetCities():Members() do
     end
     print(c:GetID() .. "|" .. nm .. "|" .. c:GetX() .. "," .. c:GetY() .. "|" .. c:GetPopulation() .. "|" .. string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f", c:GetYield(0), c:GetYield(1), c:GetYield(2), c:GetYield(3), c:GetYield(4), c:GetYield(5)) .. "|" .. string.format("%.1f", g:GetHousing()) .. "|" .. amTotal .. "|" .. g:GetTurnsUntilGrowth() .. "|" .. producing .. "|" .. turnsLeft .. "|" .. defStr .. "|" .. garHP .. "/" .. garMax .. "|" .. wallHP .. "/" .. wallMax .. "|" .. table.concat(cityTargets, ";") .. "|" .. table.concat(pillDistricts, ";") .. "|" .. table.concat(distLocs, ";") .. "|" .. string.format("%.1f|%.1f|%.1f|%d", loy, loyMax, loyPT, loyFlip) .. "|" .. string.format("%.1f|%.1f|%d", g:GetFoodSurplus(), g:GetFood(), g:GetGrowthThreshold()) .. "|" .. table.concat(pillBuildings, ";") .. "|" .. garrisonUnit)
     if #unimproved > 0 or #pillImprov > 0 then
-        print("CITYTILES|" .. c:GetID() .. "|" .. table.concat(unimproved, ",") .. "|" .. table.concat(pillImprov, ","))
+        -- ";" between entries: each entry (NAME@x,y) has a comma of its own
+        print("CITYTILES|" .. c:GetID() .. "|" .. table.concat(unimproved, ";") .. "|" .. table.concat(pillImprov, ";"))
     end
     if #allBuildings > 0 then
         print("CITYBLDG|" .. c:GetID() .. "|" .. table.concat(allBuildings, ","))
@@ -705,6 +708,15 @@ print("{SENTINEL}")
 """
 
 
+_TILE_ENTRY = re.compile(r"([A-Za-z0-9_]+)@(-?\d+),(-?\d+)")
+
+
+def _tile_entries(raw: str) -> list[str]:
+    """`NAME@x,y` entries from a CITYTILES field (";"-separated; a legacy
+    ","-separated field parses too, since each entry is matched whole)."""
+    return [f"{n}@{x},{y}" for n, x, y in _TILE_ENTRY.findall(raw)]
+
+
 def parse_cities_response(lines: list[str]) -> tuple[list[CityInfo], list[str]]:
     """Returns (cities, distance_lines) where distance_lines are 'A|B|N' strings."""
     cities = []
@@ -721,12 +733,8 @@ def parse_cities_response(lines: list[str]) -> tuple[list[CityInfo], list[str]]:
             if len(p) >= 4:
                 cid = int(p[1])
                 if cid in city_by_id:
-                    city_by_id[cid].unimproved_resources = [
-                        r for r in p[2].split(",") if r
-                    ]
-                    city_by_id[cid].pillaged_improvements = [
-                        r for r in p[3].split(",") if r
-                    ]
+                    city_by_id[cid].unimproved_resources = _tile_entries(p[2])
+                    city_by_id[cid].pillaged_improvements = _tile_entries(p[3])
             continue
         if line.startswith("CITYBLDG|"):
             p = line.split("|")

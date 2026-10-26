@@ -358,3 +358,97 @@ def test_end_turn_units_blocker_never_skips_a_moving_unit():
 
     src = inspect.getsource(end_turn.execute_end_turn)
     assert "UnitManager.GetQueuedDestination(u) == nil and UnitManager.CanStartOperation(u, skipOp.Hash" in src
+
+
+# --- Round 2 -------------------------------------------------------------------
+
+
+def test_load_entry_names_the_save_the_menu_loaded():
+    from civ_mcp import server
+
+    res = (
+        "Kill: ok | Launch: ok | Load: Save loading (49s). Steps: Main menu up after "
+        "188s (tuner), Clicked Single Player, Clicked Load Game, Clicked Autosaves "
+        "filter, Selected save AutoSave_0007, Clicked Load Game button, Clicked CONTINUE"
+    )
+    assert server._loaded_save_name(None, res) == "AutoSave_0007"
+    assert server._loaded_save_name("0_MCP_0012", res) == "0_MCP_0012"
+    assert server._loaded_save_name(None, "Save loading. Steps: x") == "latest autosave"
+
+
+def test_city_states_query_skips_free_cities():
+    from civ_mcp.lua.governance import build_city_states_query
+
+    q = build_city_states_query()
+    assert "IsFreeCities" in q and "CIVILIZATION_FREE_CITIES" in q
+    assert "not isFreeCities(i)" in q
+
+
+def test_activity_unknown_is_flagged_in_units_and_board():
+    u = lq.parse_units_response([BASE_UNIT + "|0|?"])[0]
+    assert "[activity unknown]" in nr.narrate_units([u])
+    out = format_situation(Situation(overview=_ov(), units=[u]))
+    assert "(unit activity unavailable)" in out
+    ok = lq.parse_units_response([BASE_UNIT + "|0|awake"])[0]
+    assert "(unit activity unavailable)" not in format_situation(
+        Situation(overview=_ov(), units=[ok])
+    )
+
+
+class _Svc:
+    def __init__(self):
+        self.starts = 0
+        self.stops = 0
+
+    def start(self):
+        self.starts += 1
+
+    async def stop(self):
+        self.stops += 1
+
+
+def test_background_pause_nests_and_restarts_once():
+    import types
+
+    from civ_mcp import server
+
+    popup, cam, dog = _Svc(), _Svc(), _Svc()
+    cam.clear = lambda: None
+    life = types.SimpleNamespace(popup_watcher=popup, camera=cam, watchdog=dog)
+    ctx = types.SimpleNamespace(request_context=types.SimpleNamespace(lifespan_context=life))
+
+    async def go():
+        async with server._background_paused(ctx):
+            async with server._background_paused(ctx):
+                pass
+            assert (popup.starts, cam.starts, dog.starts) == (0, 0, 0)
+
+    asyncio.run(go())
+    for svc in (popup, cam, dog):
+        assert svc.stops == 1 and svc.starts == 1
+    assert life.pause_depth == 0
+
+
+def test_service_start_twice_keeps_one_task():
+    from civ_mcp.game_over_watchdog import GameOverWatchdog
+    from civ_mcp.spectator import CameraController, PopupWatcher
+
+    async def go():
+        made = []
+        for svc in (
+            PopupWatcher(conn=None),
+            CameraController(conn=None),
+            GameOverWatchdog(gs=None, logger=None),
+        ):
+            svc.start()
+            first = svc._task
+            svc.start()
+            made.append(svc._task is first)
+            await svc.stop()
+            assert svc._task is None and first.cancelled()
+            svc.start()  # a stopped service starts again
+            assert svc._task is not None and svc._task is not first
+            await svc.stop()
+        return made
+
+    assert asyncio.run(go()) == [True, True, True]

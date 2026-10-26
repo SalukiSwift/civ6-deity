@@ -195,6 +195,11 @@ async def _execute(gs: Any, o: Order) -> str:
     return await dispatch_research(gs, o.item, o.kind if o.kind == "civic" else "tech")
 
 
+def is_failure(result: str) -> bool:
+    """A game result that reports an order not carried out."""
+    return str(result).strip().startswith(("Error", "BLOCKED"))
+
+
 async def run_orders(
     gs: Any,
     orders: list[Order],
@@ -203,14 +208,15 @@ async def run_orders(
     """Run orders in sequence, continuing past failures.
 
     Each result is 'OK <game result>' or 'FAIL <reason>'. A game result that
-    starts with 'Error' counts as a failure.
+    starts with 'Error' or 'BLOCKED' (a move the game accepted but the unit
+    did not make) counts as a failure.
     """
     results: list[tuple[Order, str]] = []
     for o in orders:
         try:
             raw = await _execute(gs, o)
             text = str(raw).strip()
-            res = f"FAIL {text}" if text.startswith("Error") else f"OK {text}"
+            res = f"FAIL {text}" if is_failure(text) else f"OK {text}"
         except (LuaError, ValueError) as e:
             res = f"FAIL {e}"
         except Exception as e:  # one bad order must not lose the rest

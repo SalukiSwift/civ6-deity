@@ -60,7 +60,7 @@ Full upstream notes are in `docs/upstream-AGENTS.md` for reference. The rules th
 8. Buy religious units only in cities where your religion is the majority.
 9. Never delete Great People (0 charges is normal). Activate them on a matching completed district.
 10. Call `get_map_area` with radius 2 before moving civilians. Forest and hills movement costs stack.
-11. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
+11. Recovery: `load_game_save("0_MCP_NNNN", reason)` or `restart_and_load(reason, save_name="0_MCP_NNNN")` (`reason` comes first; `restart_and_load(reason)` loads the latest autosave). Save names have no extension. Autosaves are named `0_MCP_NNNN` and the last 8 are kept; they are written to `Saves\Single` (next to April's own named saves), not `Saves\Single\auto`, which holds the game's own `AutoSave_NNNN` files. A turn regression gives a CRITICAL warning; treat it as a signal, not a license to reload for advantage.
 
 Also: `get_tech_civics` flags items 2 turns or fewer away as "!! GRAB THIS"; take those.
 

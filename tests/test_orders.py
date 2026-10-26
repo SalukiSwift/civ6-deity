@@ -1,5 +1,6 @@
 """Tests for batch_orders parsing, execution and formatting."""
 
+import json
 import asyncio
 from types import SimpleNamespace
 
@@ -238,10 +239,99 @@ def test_tool_wires_camera_and_broadcast(tmp_path):
     log = (tmp_path / "lobby.md").read_text().splitlines()
     actions = [l for l in log if "[action]" in l]
     assert len(actions) == 3
-    assert "unit_action move #3 -> (12,8): to ridge => OK" in actions[0]
-    assert "set_city_production city#4 BUILDING_MONUMENT: turn plan" in actions[2]
-    assert "unit_action attack #4 -> (9,9): turn plan => FAIL" in actions[1]
+    assert "unit #3 move -> (12,8): to ridge => " in actions[0]
+    assert "city #4 production: turn plan => " in actions[2]
+    assert "unit #4 attack -> (9,9): turn plan => failed: out of range" in actions[1]
+    rows = [json.loads(l) for l in (tmp_path / "lobby.jsonl").read_text().splitlines()]
+    acts = [r for r in rows if r["kind"] == "action"]
+    assert acts[1]["meta"]["result"] == "FAIL out of range"  # raw result kept
 
 
 async def _noop2(*a, **k):
     return None
+
+
+# --- D11a: a move the unit did not make is a failure -------------------------
+
+BLOCKED = (
+    "BLOCKED: water tile - land units need Shipbuilding tech to embark "
+    "(unit still at (62,36), target (63,38))"
+)
+
+
+def test_blocked_move_counts_as_fail():
+    async def blocked(*a):
+        return BLOCKED
+
+    gs = _gs(move_unit=blocked)
+    orders, _ = parse_orders([{"unit_id": 1, "action": "move", "x": 63, "y": 38}])
+    results = asyncio.run(run_orders(gs, orders, _noop))
+    assert results[0][1] == "FAIL " + BLOCKED
+    assert format_results(1, results, []).startswith("#1 FAIL BLOCKED: water tile")
+
+
+def test_gamestate_move_unit_reports_blocked_as_failure():
+    from civ_mcp.game_state import GameState
+
+    gs = GameState.__new__(GameState)
+
+    async def no_popup():
+        return ""
+
+    async def write(lua, timeout=5.0):
+        return ["OK:MOVING_TO|63,38|from:62,36"]
+
+    async def read(lua, timeout=5.0):
+        return [
+            "POS|62|36",
+            "DIAG|WATER|water tile - land units need Shipbuilding tech to embark",
+        ]
+
+    gs.dismiss_popup = no_popup
+    gs.conn = SimpleNamespace(execute_write=write, execute_read=read)
+    out = asyncio.run(gs.move_unit(1, 63, 38))
+    assert out.startswith("BLOCKED: water tile - land units need Shipbuilding")
+    assert "(unit still at (62,36), target (63,38))" in out
+
+
+def _life(tmp_path, gs, pushes):
+    import types
+
+    from civ_mcp.broadcast import Broadcast
+
+    async def ident():
+        raise ConnectionError("no game")
+
+    gs.get_game_identity = ident
+    life = types.SimpleNamespace(
+        game=gs,
+        broadcast=Broadcast(tmp_path),
+        camera=types.SimpleNamespace(push=lambda x, y, label: pushes.append((x, y))),
+        logger=types.SimpleNamespace(_turn=5, log_tool_call=_noop2, log_error=_noop2),
+        spatial=types.SimpleNamespace(record=_noop2),
+    )
+    return types.SimpleNamespace(
+        request_context=types.SimpleNamespace(lifespan_context=life)
+    )
+
+
+def test_blocked_move_does_not_hop_camera_and_logs_blocked(tmp_path):
+    from civ_mcp import server
+
+    async def blocked(*a):
+        return BLOCKED
+
+    pushes = []
+    gs = _gs(_high_water_turn=5, move_unit=blocked)
+    ctx = _life(tmp_path, gs, pushes)
+    batch = server.batch_orders if callable(server.batch_orders) else server.batch_orders.fn
+    out = asyncio.run(
+        batch(ctx, [{"unit_id": 1, "action": "move", "x": 63, "y": 38}], why="test")
+    )
+    single = server.unit_action if callable(server.unit_action) else server.unit_action.fn
+    res = asyncio.run(single(ctx, 1, "move", 63, 38, why="again"))
+    assert out.startswith("#1 FAIL BLOCKED")
+    assert res.startswith("BLOCKED")
+    assert pushes == []
+    log = (tmp_path / "lobby.md").read_text()
+    assert log.count("=> blocked: water tile") == 2

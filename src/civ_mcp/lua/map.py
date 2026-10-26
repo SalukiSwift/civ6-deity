@@ -457,11 +457,19 @@ print("{SENTINEL}")
 
 
 def build_verify_city_at(x: int, y: int) -> str:
-    """Check if a city exists at the given coordinates."""
+    """Check if a city exists at the given coordinates (and name it)."""
     return f"""
 local plot = Map.GetPlot({x}, {y})
 if plot and plot:IsCity() then
-    print("OK:CITY_EXISTS")
+    local nm = ""
+    pcall(function()
+        local c = nil
+        pcall(function() c = CityManager.GetCityAt({x}, {y}) end)
+        if not c then pcall(function() c = Cities.GetCityInPlot({x}, {y}) end) end
+        if not c then pcall(function() c = Cities.GetCityInPlot(plot:GetIndex()) end) end
+        if c then nm = Locale.Lookup(c:GetName()):gsub("|", "/") end
+    end)
+    print("OK:CITY_EXISTS|" .. nm)
 else
     print("OK:NO_CITY")
 end
@@ -475,6 +483,14 @@ def parse_verify_city_at(lines: list[str]) -> bool:
         if "CITY_EXISTS" in line:
             return True
     return False
+
+
+def parse_verified_city_name(lines: list[str]) -> str:
+    """The city name from a CITY_EXISTS|<name> line, or ''."""
+    for line in lines:
+        if "CITY_EXISTS|" in line:
+            return line.split("CITY_EXISTS|", 1)[1].strip()
+    return ""
 
 
 def build_settle_advisor_query(unit_index: int) -> str:

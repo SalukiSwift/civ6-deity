@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from civ_mcp import lua as lq
+from civ_mcp.lua.map import parse_verified_city_name
 from civ_mcp.connection import GameConnection
 from civ_mcp.fog import FogMemory
 from civ_mcp.narrate import (
@@ -157,7 +158,23 @@ class GameState:
 
     async def get_units(self) -> list[lq.UnitInfo]:
         lines = await self.conn.execute_write(lq.build_units_query())
-        return lq.parse_units_response(lines)
+        units = lq.parse_units_response(lines)
+        # Remembered for the broadcast log, which names units by type and id.
+        self._unit_labels = {u.unit_index: (u.unit_type, u.unit_id) for u in units}
+        return units
+
+    def unit_label(self, unit_id: object) -> str | None:
+        """'Warrior #131073' for a unit id or index seen in the last unit list."""
+        try:
+            uid = int(unit_id)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return None
+        hit = getattr(self, "_unit_labels", {}).get(uid % 65536)
+        if hit is None or (uid >= 65536 and uid != hit[1]):
+            return None  # unknown, or the index now belongs to another unit
+        from civ_mcp.situation import unit_type_name
+
+        return f"{unit_type_name(hit[0])} #{hit[1]}"
 
     async def get_builder_tasks(
         self,
@@ -283,8 +300,13 @@ class GameState:
                             from_x = int(from_match.group(1))
                             from_y = int(from_match.group(2))
                             if now_x == from_x and now_y == from_y:
+                                # The order was accepted but the unit did not
+                                # move: report a failure, not an OK move.
                                 reason = lq.parse_blocked_diagnostic(pos_lines)
-                                result += f"|BLOCKED ({reason})"
+                                return (
+                                    f"BLOCKED: {reason} (unit still at "
+                                    f"({now_x},{now_y}), target ({target_x},{target_y}))"
+                                )
                             else:
                                 dx = now_x - from_x
                                 # positive dy = north (higher Y is up on screen)
@@ -307,42 +329,40 @@ class GameState:
             except Exception:
                 pass
         # Post-move: visibility diff for discovery feedback
-        blocked = "|BLOCKED" in result
-        if not blocked:
-            try:
-                # Extract actual position from result
-                now_match = re.search(r"now_at:(\d+),(\d+)", result)
-                if now_match:
-                    vis_x, vis_y = int(now_match.group(1)), int(now_match.group(2))
-                    vis_lines = await self.conn.execute_read(
-                        lq.build_post_move_visibility_query(vis_x, vis_y)
+        try:
+            # Extract actual position from result
+            now_match = re.search(r"now_at:(\d+),(\d+)", result)
+            if now_match:
+                vis_x, vis_y = int(now_match.group(1)), int(now_match.group(2))
+                vis_lines = await self.conn.execute_read(
+                    lq.build_post_move_visibility_query(vis_x, vis_y)
+                )
+                vis_tiles = lq.parse_post_move_visibility(vis_lines)
+                self._remember_post_move(vis_lines, vis_tiles)
+                if self.spatial is None or not self.spatial._revealed_seeded:
+                    return result
+                all_revealed = {(x, y) for x, y, _ in vis_tiles}
+                newly_revealed = self.spatial.mark_revealed(all_revealed)
+                if newly_revealed:
+                    new_tile_data = [
+                        (x, y, m)
+                        for x, y, m in vis_tiles
+                        if (x, y) in newly_revealed
+                    ]
+                    discovery_text = narrate_move_discoveries(
+                        new_tile_data, len(newly_revealed)
                     )
-                    vis_tiles = lq.parse_post_move_visibility(vis_lines)
-                    self._remember_post_move(vis_lines, vis_tiles)
-                    if self.spatial is None or not self.spatial._revealed_seeded:
-                        return result
-                    all_revealed = {(x, y) for x, y, _ in vis_tiles}
-                    newly_revealed = self.spatial.mark_revealed(all_revealed)
-                    if newly_revealed:
-                        new_tile_data = [
-                            (x, y, m)
-                            for x, y, m in vis_tiles
-                            if (x, y) in newly_revealed
-                        ]
-                        discovery_text = narrate_move_discoveries(
-                            new_tile_data, len(newly_revealed)
-                        )
-                        if discovery_text:
-                            result += "\n" + discovery_text
-                        # Record discovery event in spatial tracker
-                        await self.spatial.record_discovery(
-                            "unit_action",
-                            (vis_x, vis_y),
-                            newly_revealed,
-                            0,
-                        )
-            except Exception:
-                log.debug("Post-move visibility diff failed", exc_info=True)
+                    if discovery_text:
+                        result += "\n" + discovery_text
+                    # Record discovery event in spatial tracker
+                    await self.spatial.record_discovery(
+                        "unit_action",
+                        (vis_x, vis_y),
+                        newly_revealed,
+                        0,
+                    )
+        except Exception:
+            log.debug("Post-move visibility diff failed", exc_info=True)
         return result
 
     def _remember_post_move(
@@ -522,6 +542,10 @@ class GameState:
             verify_lua = lq.build_verify_city_at(x, y)
             verify_lines = await self.conn.execute_read(verify_lua)
             verified = lq.parse_verify_city_at(verify_lines)
+            if verified:
+                city_name = parse_verified_city_name(verify_lines)
+                if city_name:
+                    result = f"FOUNDED|{x},{y}|{city_name}"
             if not verified:
                 # Retry once — popup may have blocked the async operation
                 try:
@@ -533,6 +557,9 @@ class GameState:
                         if lq.parse_verify_city_at(verify_lines):
                             result = retry_result
                             verified = True
+                            city_name = parse_verified_city_name(verify_lines)
+                            if city_name:
+                                result = f"FOUNDED|{x},{y}|{city_name}"
                 except Exception:
                     log.debug(
                         "found_city retry after popup dismiss failed", exc_info=True

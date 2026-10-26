@@ -8,6 +8,7 @@ go to ``campaign/lobby.md`` and ``lobby.jsonl`` instead.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,29 +217,43 @@ class Broadcast:
     # -- formatting ------------------------------------------------------
 
     @staticmethod
-    def action_text(tool: str, params: dict, result: str) -> str:
-        parts = [tool]
-        if params.get("action"):
-            parts.append(str(params["action"]))
-        if params.get("unit_id") is not None:
-            try:
-                parts.append(f"#{int(params['unit_id']) % 65536}")
-            except (TypeError, ValueError):
-                parts.append(f"#{params['unit_id']}")
-        for key in ("item", "item_name", "improvement", "name"):
-            if params.get(key):
-                parts.append(str(params[key]))
-                break
+    def action_text(
+        tool: str, params: dict, result: str, unit_label: str | None = None
+    ) -> str:
+        """One readable log line: who did what, why, and the outcome in plain
+        Civ terms (see humanize_result). The raw result belongs in meta."""
         tx = params.get("target_x", params.get("x"))
         ty = params.get("target_y", params.get("y"))
-        if tx is not None and ty is not None:
-            parts.append(f"-> ({tx},{ty})")
-        text = " ".join(parts)
+        target = f" -> ({tx},{ty})" if tx is not None and ty is not None else ""
+        if params.get("unit_id") is not None:
+            subject = unit_label or f"unit #{params['unit_id']}"
+            words = [str(params.get("action") or tool.replace("_", " ")).replace("_", " ")]
+            if params.get("improvement"):
+                words.append(game_name(str(params["improvement"])))
+            detail = " ".join(words) + target
+        elif tool in _CITY_TOOLS and params.get("city_id") is not None:
+            subject = f"city #{params['city_id']}"
+            detail = _CITY_TOOLS[tool]
+            if tool == "city_action" and params.get("action"):
+                detail = str(params["action"]).replace("_", " ")
+            detail += target
+        elif tool == "set_research":
+            subject = "civic" if str(params.get("category", "")).lower() == "civic" else "research"
+            detail = ""
+        else:
+            subject = tool.replace("_", " ")
+            detail = ""
+            for key in ("item", "item_name", "name"):
+                if params.get(key):
+                    detail = game_name(str(params[key]))
+                    break
+            detail += target
+        text = f"{subject} {detail}".strip()
         if params.get("why"):
             text += f": {params['why']}"
-        first = (result or "").strip().split("\n", 1)[0].strip()
-        if first:
-            text += f" => {first}"
+        outcome = humanize_result(tool, params, result)
+        if outcome:
+            text += f" => {outcome}"
         return text
 
     @staticmethod
@@ -260,6 +275,175 @@ class Broadcast:
                     break
                 block.append(line.strip())
         return " | ".join(block) if block else "quiet turn"
+
+
+# -- plain-language action results ------------------------------------------
+
+_CITY_TOOLS = {
+    "set_city_production": "production",
+    "purchase_item": "purchase",
+    "city_action": "action",
+    "set_city_focus": "focus",
+    "purchase_tile": "tile purchase",
+}
+_TYPE_PREFIXES = (
+    "UNIT_",
+    "BUILDING_",
+    "TECH_",
+    "CIVIC_",
+    "DISTRICT_",
+    "IMPROVEMENT_",
+    "PROJECT_",
+    "WONDER_",
+    "RESOURCE_",
+    "PROMOTION_",
+    "POLICY_",
+    "GOVERNMENT_",
+)
+_SMALL_WORDS = frozenset({"of", "the", "and", "a", "an", "in", "on", "to", "for"})
+
+
+def game_name(type_name: str) -> str:
+    """'CIVIC_CODE_OF_LAWS' -> 'Code of Laws', 'BUILDING_MONUMENT' -> 'Monument'."""
+    s = type_name.strip()
+    for prefix in _TYPE_PREFIXES:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if not s.isupper() and " " in s:
+        return s  # already a display name
+    words = s.replace("_", " ").lower().split()
+    return " ".join(
+        w if i and w in _SMALL_WORDS else w.capitalize() for i, w in enumerate(words)
+    )
+
+
+def hex_distance(x1: int, y1: int, x2: int, y2: int) -> int:
+    """Tiles between two plots (Civ 6 offset rows: odd rows sit half a tile east)."""
+
+    def axial(x: int, y: int) -> tuple[int, int]:
+        return x - (y - (y & 1)) // 2, y
+
+    q1, r1 = axial(x1, y1)
+    q2, r2 = axial(x2, y2)
+    dq, dr = q1 - q2, r1 - r2
+    return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
+
+
+def _xy(text: str) -> tuple[int, int] | None:
+    m = re.search(r"(-?\d+),(-?\d+)", text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _tiles(n: int) -> str:
+    return f"{n} tile" if n == 1 else f"{n} tiles"
+
+
+def _humanize_move(code: str, fields: list[str]) -> str:
+    target = _xy(fields[0]) if fields else None
+    now = next((_xy(f) for f in fields if f.startswith("now_at:")), None)
+    verb = "moved to capture at" if code == "CAPTURE_MOVE" else "moved to"
+    if target is None:
+        return "moved"
+    tx, ty = target
+    if now is None:
+        return f"ordered to move to ({tx},{ty})"
+    if now == target:
+        return f"{verb} ({tx},{ty})"
+    nx, ny = now
+    if any(f.startswith("STOPPED_MID_PATH") for f in fields):
+        left = hex_distance(nx, ny, tx, ty)
+        return f"moved to ({nx},{ny}), still {_tiles(left)} from ({tx},{ty})"
+    return f"moved to ({nx},{ny}) on the way to ({tx},{ty})"
+
+
+def _humanize_attack(lines: list[str]) -> str | None:
+    line = next(
+        (ln for ln in lines if re.match(r"(OK )?(OK:)?(MELEE|RANGE|CITY_RANGE|AIR)_ATTACK\|", ln)),
+        None,
+    )
+    if line is None:
+        return None
+    tgt = re.search(r"at \((-?\d+),(-?\d+)\)", line) or re.search(r"@(-?\d+),(-?\d+)", line)
+    where = f"({tgt.group(1)},{tgt.group(2)})" if tgt else "the target"
+    text = "\n".join(lines)
+    if "KILLED" in line or "(killed)" in line or "Target eliminated" in text:
+        return f"attacked {where}: enemy destroyed"
+    m = re.search(r"enemy HP:\d+ -> (\d+)/\d+", line)
+    if m:
+        return f"attacked {where}: enemy at {m.group(1)} HP"
+    pre = re.search(r"pre_hp:(\d+)/\d+", line)
+    est = re.search(r"est damage dealt:~(\d+)", line)
+    done = re.search(r"\|damage dealt:(\d+)", line)
+    if pre and done:
+        return f"attacked {where}: enemy at {int(pre.group(1)) - int(done.group(1))} HP"
+    if pre and est:
+        return f"attacked {where}: enemy at about {max(int(pre.group(1)) - int(est.group(1)), 0)} HP"
+    return f"attacked {where}"
+
+
+def humanize_result(tool: str, params: dict, result: str) -> str:
+    """A tool result in plain Civ terms for the log; else its first line."""
+    raw = (result or "").strip()
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    attack = _humanize_attack(lines)
+    if attack:
+        return attack
+    first = lines[0]
+    failed = first.startswith("FAIL ")  # batch_orders' own prefixes
+    for prefix in ("OK ", "FAIL "):
+        if first.startswith(prefix):
+            first = first[len(prefix):]
+            break
+    if first.startswith("OK:"):
+        first = first[3:].strip()
+    if first.startswith("BLOCKED"):
+        reason = first.split(":", 1)[1] if ":" in first else first
+        reason = re.split(r" - | \(unit still at", reason, maxsplit=1)[0].strip()
+        return f"blocked: {reason}" if reason else "blocked"
+    if first.startswith("Error"):
+        msg = first[len("Error"):].lstrip(": ").strip()
+        code, _, detail = msg.partition("|")
+        return f"refused: {detail.strip() or code.replace('_', ' ').lower()}"
+    code, *fields = first.split("|")
+    if code in ("MOVING_TO", "CAPTURE_MOVE"):
+        return _humanize_move(code, fields)
+    if code == "FOUNDED":
+        xy = _xy(fields[0]) if fields else None
+        where = f" at ({xy[0]},{xy[1]})" if xy else ""
+        name = fields[1].strip() if len(fields) > 1 and fields[1].strip() else "a city"
+        return f"founded {name}{where}"
+    if code == "FORTIFIED":
+        return fields[0] if fields else "fortified"
+    if code == "SLEEPING":
+        return "sleeping"
+    if code == "ALERT":
+        return "on alert"
+    if code == "HEALING":
+        hp = fields[0].replace("HP:", "") if fields else ""
+        return f"healing (HP {hp})" if hp else "healing"
+    if code == "SKIPPED":
+        return f"skipped {fields[0]}" if fields else "skipped this turn"
+    if code == "PRODUCING" and fields:
+        turns = f" ({fields[1]})" if len(fields) > 1 and fields[1] else ""
+        return f"now building {game_name(fields[0])}{turns}"
+    if code == "PURCHASED" and fields:
+        cost = re.search(r"cost=(\d+)([gf])", first)
+        paid = ""
+        if cost:
+            paid = f" for {cost.group(1)} {'faith' if cost.group(2) == 'f' else 'gold'}"
+        return f"bought {game_name(fields[0])}{paid}"
+    if code == "RESEARCHING" and fields:
+        return f"researching {game_name(fields[0])}"
+    if code == "PROGRESSING" and fields:
+        return f"civic: {game_name(fields[0])}"
+    if code == "IMPROVING" and fields:
+        xy = _xy(fields[1]) if len(fields) > 1 else None
+        where = f" at ({xy[0]},{xy[1]})" if xy else ""
+        return f"building {game_name(fields[0])}{where}"
+    return f"failed: {first}" if failed else first
 
 
 NOTEBOOK_SECTIONS = ("Standing lessons", "Game log", "Current hypothesis")

@@ -36,14 +36,20 @@ class GameOverWatchdog:
         self._armed.set()
 
     def start(self) -> None:
+        # Idempotent: a second start while the task runs must not orphan it.
+        if self._task is not None and not self._task.done():
+            return
         self._task = asyncio.create_task(self._run(), name="game-over-watchdog")
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - it already died; nothing to stop
                 pass
 
     async def _run(self) -> None:

@@ -415,8 +415,16 @@ csTypeMap["LEADER_MINOR_CIV_MILITARISTIC"] = "Militaristic"
 csTypeMap["LEADER_MINOR_CIV_RELIGIOUS"] = "Religious"
 csTypeMap["LEADER_MINOR_CIV_TRADE"] = "Trade"
 csTypeMap["LEADER_MINOR_CIV_INDUSTRIAL"] = "Industrial"
+-- The Free Cities player is a minor player but not a city-state (the game's
+-- City-States screen never lists it; the UI tests IsFreeCities).
+local function isFreeCities(i)
+    local ok, fc = pcall(function() return Players[i].IsFreeCities and Players[i]:IsFreeCities() end)
+    if ok and fc then return true end
+    local cfg = PlayerConfigurations[i]
+    return cfg ~= nil and cfg:GetCivilizationTypeName() == "CIVILIZATION_FREE_CITIES"
+end
 for i = 0, 62 do
-    if Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() == false and Players[i]:IsBarbarian() == false and pDiplo:HasMet(i) then
+    if Players[i] and Players[i]:IsAlive() and Players[i]:IsMajor() == false and Players[i]:IsBarbarian() == false and not isFreeCities(i) and pDiplo:HasMet(i) then
         local cfg = PlayerConfigurations[i]
         local name = Locale.Lookup(cfg:GetPlayerName())
         local leaderType = cfg:GetLeaderTypeName() or ""

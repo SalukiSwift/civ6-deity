@@ -60,11 +60,27 @@ def _unset(name: str) -> bool:
     return not name or name.strip().upper() in ("NONE", "NOTHING")
 
 
-def _ids(ids: list[int]) -> str:
+def _ids(ids: list[str]) -> str:
     shown = ", ".join(str(i) for i in ids[:MAX_IDS])
     if len(ids) > MAX_IDS:
         shown += f" (+{len(ids) - MAX_IDS} more)"
     return shown
+
+
+def unit_type_name(unit_type: str) -> str:
+    """'UNIT_SUMERIAN_WAR_CART' -> 'Sumerian War Cart'."""
+    base = unit_type[5:] if unit_type.startswith("UNIT_") else unit_type
+    return base.replace("_", " ").title() or "Unit"
+
+
+def _unit_label(u: UnitInfo) -> str:
+    """'Warrior #131073 (62,37)': type, the id tools take, position."""
+    return f"{unit_type_name(u.unit_type)} #{u.unit_id} ({u.x},{u.y})"
+
+
+def _moving_label(u: UnitInfo) -> str:
+    dest = u.activity[len("moving:"):]
+    return f"{_unit_label(u)} to ({dest})"
 
 
 def _empire(s: Situation) -> list[str]:
@@ -80,9 +96,15 @@ def _empire(s: Situation) -> list[str]:
 
 def _attention(s: Situation) -> list[str]:
     out: list[str] = []
-    idle = [u.unit_id for u in s.units if u.moves_remaining > 0 and not u.is_busy]
+    idle = [
+        _unit_label(u) for u in s.units if u.moves_remaining > 0 and not u.is_busy
+    ]
     if idle:
         out.append(f"idle units: {_ids(idle)}")
+    # On a queued multi-turn move: busy, the path runs when the turn ends.
+    moving = [_moving_label(u) for u in s.units if u.activity.startswith("moving:")]
+    if moving:
+        out.append(f"moving: {_ids(moving)}")
     idle_cities = [c.name for c in s.cities if _unset(c.currently_building)]
     if idle_cities:
         out.append(f"no production: {', '.join(idle_cities)}")
@@ -97,9 +119,12 @@ def _attention(s: Situation) -> list[str]:
         out.append(f"trade routes: {used}/{cap}")
     for b in s.blockers:
         out.append(f"pending choice: {b}")
-    promo = [u.unit_id for u in s.units if u.needs_promotion]
+    promo = [_unit_label(u) for u in s.units if u.needs_promotion]
     if promo:
         out.append(f"promotions available: {_ids(promo)}")
+    if any(u.activity == "?" for u in s.units):
+        # The activity read failed: the idle list may include busy units.
+        out.insert(0, "(unit activity unavailable)")
     for name in s.unavailable:
         if name not in ("threats", "rivals"):
             out.insert(0, f"(unavailable: {name})")

@@ -160,6 +160,7 @@ _ACTIVITY_MARKERS = {
     "skipping": "skipping turn",
     "automated": "automated",
     "busy": "busy",
+    "?": "activity unknown",  # the units query could not read the activity
 }
 
 
@@ -426,12 +427,12 @@ def narrate_cities(
                 " (repair via set_city_production)"
             )
         if c.pillaged_improvements:
-            pill_imps = [p.split("@")[0] for p in c.pillaged_improvements]
+            pill_imps = [_tile_entry_text(p) for p in c.pillaged_improvements]
             lines.append(
                 f"    !! PILLAGED TILES: {', '.join(pill_imps)} (send builder to repair)"
             )
         if c.unimproved_resources:
-            res_names = [r.split("@")[0] for r in c.unimproved_resources]
+            res_names = [_tile_entry_text(r) for r in c.unimproved_resources]
             lines.append(f"    Needs builder: {', '.join(res_names)} (unimproved)")
     if distances:
         lines.append("")
@@ -439,6 +440,12 @@ def narrate_cities(
         for d in distances:
             lines.append(f"  {d}")
     return "\n".join(lines)
+
+
+def _tile_entry_text(entry: str) -> str:
+    """'WHEAT@60,35' -> 'WHEAT at (60,35)'."""
+    name, _, xy = entry.partition("@")
+    return f"{name} at ({xy})" if xy else name
 
 
 def narrate_pathing_estimate(est: lq.PathingEstimate) -> str:

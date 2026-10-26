@@ -33,6 +33,7 @@ from civ_mcp.orders import (
     dispatch_research,
     dispatch_unit_action,
     format_results,
+    is_failure,
     parse_orders,
     run_orders,
 )
@@ -75,6 +76,7 @@ class AppContext:
     spatial: SpatialTracker
     watchdog: GameOverWatchdog
     broadcast: Broadcast
+    pause_depth: int = 0  # nesting of _background_paused blocks
 
 
 async def _auto_boot(
@@ -436,6 +438,15 @@ def _require_reason(reason: str) -> str | None:
     return None
 
 
+def _loaded_save_name(save_name: str | None, result: str) -> str:
+    """The save a launcher load actually opened: the requested name, else the
+    one the menu navigation reports ("Selected save AutoSave_0007")."""
+    if save_name:
+        return save_name
+    m = re.search(r"Selected save ([^,|]+?)(?:,|\.\s|\s\||$)", result or "")
+    return m.group(1).strip() if m else "latest autosave"
+
+
 def _launcher_load_ok(result: str) -> bool:
     """Heuristic: did a launcher (menu/restart) load get as far as loading?"""
     return not (
@@ -504,6 +515,16 @@ def _result_summary(result: str) -> str:
     """First meaningful line of a result, truncated."""
     line = result.split("\n", 1)[0].strip()
     return line[:120] + "..." if len(line) > 120 else line
+
+
+def _unit_label(gs: Any, params: dict[str, Any]) -> str | None:
+    """'Warrior #131073' for the unit an action names, when the game state knows it."""
+    if params.get("unit_id") is None:
+        return None
+    try:
+        return gs.unit_label(params["unit_id"])
+    except Exception:  # noqa: BLE001 - a label is a nicety
+        return None
 
 
 async def _logged(
@@ -580,7 +601,9 @@ async def _logged(
                     )
                 log.info("CONNECTION RECOVERY: %s", restart_result)
                 if _launcher_load_ok(restart_result):
-                    gs.record_load(save or "latest autosave", "connection lost 5x")
+                    gs.record_load(
+                        _loaded_save_name(save, restart_result), "connection lost 5x"
+                    )
                 for rc_attempt in range(30):
                     try:
                         await gs.conn.reconnect()
@@ -611,10 +634,14 @@ async def _logged(
     if action_name in ACTION_TOOLS:
         try:
             bc = await _bind_broadcast(ctx)
+            gs = _get_game(ctx)
             bc.append(
                 "action",
-                Broadcast.action_text(action_name, params, result),
-                turn=_get_game(ctx)._high_water_turn or None,
+                Broadcast.action_text(
+                    action_name, params, result, unit_label=_unit_label(gs, params)
+                ),
+                turn=gs._high_water_turn or None,
+                meta={"result": result},
             )
         except Exception:
             log.warning("Broadcast action log failed", exc_info=True)
@@ -1823,6 +1850,7 @@ async def unit_action(
         action.lower() in ("move", "attack", "trade_route", "teleport")
         and target_x is not None
         and target_y is not None
+        and not is_failure(result)
     ):
         _get_camera(ctx).push(target_x, target_y, f"{action}→({target_x},{target_y})")
     return result
@@ -1962,7 +1990,11 @@ async def batch_orders(ctx: Context, orders: list[dict], why: str = "") -> str:
       {"civic": "CIVIC_CRAFTSMANSHIP"}
     Same effect as the single tools (unit_action, set_city_production,
     purchase_item, set_research). A failing or malformed order does not stop
-    the rest; the result has one line per order, by position.
+    the rest; the result has one line per order, by position. A move the
+    unit could not make comes back as "FAIL BLOCKED: <reason>".
+
+    "sleep" is refused for melee units (the game lets them fortify instead);
+    use "fortify" for them.
 
     why: Optional batch-level reason, used for orders without their own why.
     """
@@ -1989,17 +2021,20 @@ async def batch_orders(ctx: Context, orders: list[dict], why: str = "") -> str:
             if o.item:
                 params["improvement"] = o.item
         elif o.id is not None:
-            params["item_name"] = f"city#{o.id} {o.item}"
+            params.update(city_id=o.id, item_name=o.item)
         else:
-            params["item_name"] = o.item
+            params.update(tech_or_civic=o.item, category=o.kind)
         if o.x is not None and o.y is not None:
             params["target_x"], params["target_y"] = o.x, o.y
         try:
             bc = await _bind_broadcast(ctx)
             bc.append(
                 "action",
-                Broadcast.action_text(tool_of[o.kind], params, res),
+                Broadcast.action_text(
+                    tool_of[o.kind], params, res, unit_label=_unit_label(gs, params)
+                ),
                 turn=gs._high_water_turn or None,
+                meta={"result": res},
             )
         except Exception:
             log.warning("Broadcast action log failed", exc_info=True)
@@ -3173,7 +3208,7 @@ async def load_save_from_menu(
     async with _background_paused(ctx):
         result = await game_launcher.load_save_from_menu(save_name, gs.conn)
     if _launcher_load_ok(result):
-        gs.record_load(save_name or "latest autosave", reason)
+        gs.record_load(_loaded_save_name(save_name, result), reason)
     return result
 
 
@@ -3194,16 +3229,23 @@ async def _background_paused(ctx: Context):
         )
         if svc is not None
     ]
-    for svc in services:
-        await svc.stop()
-    camera = getattr(life, "camera", None)
-    if camera is not None:
-        camera.clear()  # queued hops belong to the old game
+    # Blocks nest (load_game_save -> _logged's connection-loss recovery ->
+    # restart_and_load): only the outermost one stops and restarts them.
+    depth = getattr(life, "pause_depth", 0)
+    life.pause_depth = depth + 1
     try:
+        if depth == 0:
+            for svc in services:
+                await svc.stop()
+            camera = getattr(life, "camera", None)
+            if camera is not None:
+                camera.clear()  # queued hops belong to the old game
         yield
     finally:
-        for svc in services:
-            svc.start()
+        life.pause_depth = getattr(life, "pause_depth", 1) - 1
+        if life.pause_depth == 0:
+            for svc in services:
+                svc.start()
 
 
 @mcp.tool(annotations={"destructiveHint": True})
@@ -3337,7 +3379,7 @@ async def restart_and_load(
     async with _background_paused(ctx):
         result = await game_launcher.restart_and_load(save_name, gs.conn)
     if _launcher_load_ok(result):
-        gs.record_load(save_name or "latest autosave", reason)
+        gs.record_load(_loaded_save_name(save_name, result), reason)
 
     # Reconnect and verify correct game loaded
     conn = gs.conn
@@ -3364,7 +3406,7 @@ async def restart_and_load(
                     result2 = await game_launcher.restart_and_load(save_name, conn)
                 if _launcher_load_ok(result2):
                     gs.record_load(
-                        save_name or "latest autosave",
+                        _loaded_save_name(save_name, result2),
                         reason + " (retry: wrong game loaded)",
                     )
                 for attempt in range(30):
